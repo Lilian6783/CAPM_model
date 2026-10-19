@@ -1,72 +1,36 @@
-import re
+import httpx
+import time
 
-old_news = list()
+from news_section import news
 
-def reset_news_reader():
-    global old_news
-    old_news = list()
+def main():
+    while True:
+        current_case = client.get('/case').json()
+        current_tick = current_case.get('tick')
 
-def gen_basedata_capm():
-    return {
-        "rf": "0.02",
-        "rm": "0.08",
-        "beta": {"AAA": 1.0, "BBB": 1.0, "CCC": 1.0}
-    }
+        # intervalle pour commencer un peu après le début et
+        #       finir un peu avant la fin
+        if 1 < current_tick < 599:
+            param_alpha = {'ticker': 'ALPHA'}
+            resp = client.get('/securities', params=param_alpha).json()
+            alpha_last = resp[0].get('last')
 
-def get_all_news(client):
-    return client.get('/news', params={'limit': -1}).json()
+            param_gamma = {'ticker': 'GAMMA'}
+            resp = client.get('/securities', params=param_gamma).json()
+            gamma_last = resp[0].get('last')
 
-def extract_news(text):
-    matches = re.findall(r'(-?\d+(?:\.\d+)?)\s*(%?)', text)
-    if not matches:
-        return None
-    number, pct = matches[-1]
-    return float(number) / 100 if pct else float(number)
+            param_theta = {'ticker': 'THETA'}
+            resp = client.get('/securities', params=param_theta).json()
+            theta_last = resp[0].get('last')
 
-def news_analysis(news):
-    headline = news.get("headline", "").lower()
-    body = news.get("body", "")
+            pass
 
-    if "risk-free" in headline or "risk free" in headline:
-        kind, ticker = "rf", None
 
-    elif "market" in headline:
-        kind, ticker = "rm", None
+if __name__ == "__main__":
+    API_KEY = "VZETG60P"
+    API_PORT = 9999
+    url = f"http://localhost:{API_PORT}/v1"
+    params = {'key': API_KEY}
 
-    elif "beta" in headline:
-        kind, ticker = "beta", news.get("ticker")
-
-    else:
-        return (None, None, None)
-
-def is_new_news_in_mail(client):
-    all_news = get_all_news(client)
-    if len(all_news) == 0:
-        return False
-    return all_news[0] not in old_news
-
-def read_news(client, state):
-    for news in get_all_news(client) [::-1]:
-        if news in old_news:
-            continue
-        old_news.append(news)
-
-        kind, ticker, value = news_analysis(news)
-        if kind is None:
-            continue
-
-        if kind == "beta":
-            state["beta"][ticker] = value
-
-        else:
-            state[kind] = value
-
-        return state
-
-def get_exp_return(state, ticker):
-    return state["rf"] + state["beta"][ticker]*(state["rm"] - state["rf"])
-
-def get_alpha(client, state, ticker, y_observed):
-    return y_observed - get_exp_return(state, ticker)
-
-print(get_alpha())
+    with httpx.Client(base_url=url, params=params) as client:
+        main()
