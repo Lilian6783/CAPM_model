@@ -1,1 +1,35 @@
+import httpx
+import time
+
+def main():
+    while True:
+        current_case = client.get('/case').json()
+        current_tick = current_case.get('tick')
+
+        # intervalle pour commencer un peu après le début et
+        #       finir un peu avant la fin
+        if 1 < current_tick < 599:
+            param_alpha = {'ticker': 'ALPHA'}
+            resp = client.get('/securities', params=param_alpha).json()
+            alpha_last = resp[0].get('last')
+
+            param_gamma = {'ticker': 'GAMMA'}
+            resp = client.get('/securities', params=param_gamma).json()
+            gamma_last = resp[0].get('last')
+
+            param_theta = {'ticker': 'THETA'}
+            resp = client.get('/securities', params=param_theta).json()
+            theta_last = resp[0].get('last')
+
+            pass
+
+
+if __name__ == "__main__":
+    API_KEY = "API_KEY"
+    API_PORT = 9999
+    url = f"http://localhost:{API_PORT}/v1"
+    params = {'key': API_KEY}
+
+    with httpx.Client(base_url=url, params=params) as client:
+        main()
 
