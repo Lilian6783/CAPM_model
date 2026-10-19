@@ -6,7 +6,7 @@ import httpx
 # Permet d'importer news_section.py même si le script est lancé depuis un autre dossier
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import news_section as news
+import news as news
 
 TICKERS = ["ALPHA", "GAMMA", "THETA"]
 
