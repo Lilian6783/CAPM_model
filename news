@@ -27,10 +27,10 @@ def parse_news(text):
         out["beta"] = {
             t.upper(): float(v)
             for t, v in re.findall(
-                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*([\d.]+)", text
+                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*(\d+(?:\.\d+)?)", text
             )
         }
-        m = re.search(r"risk free is\s*:\s*([\d.]+)\s*%", text)
+        m = re.search(r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%", text)
         if m:
             out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
 
