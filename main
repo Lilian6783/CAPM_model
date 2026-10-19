@@ -43,10 +43,27 @@ def main(client):
                 print(f"[tick {tick}] RITM={ritm_now}, cible={state['target_price']} "
                       f"au tick {state['target_tick']}, rm/tick={rm:.6f}")
 
+                rf = state["rf"]
+                print(f"   rf/tick={rf:.6f}, prime de marché (rm - rf)={rm - rf:.6f}")
+
                 for t in TICKERS:
+                    beta = state["beta"][t]
                     exp_ret = news.get_exp_return(state, t, rm)
                     last = get_last(client, t)
-                    print(f"   {t}: prix={last}, beta={state['beta'][t]}, E[R]/tick={exp_ret:.6f}")
+
+                    # Vérification manuelle de la formule, indépendante de la fonction
+                    check = rf + beta * (rm - rf)
+                    ok = "OK" if abs(check - exp_ret) < 1e-12 else "ERREUR"
+
+                    # Rendement cumulé attendu jusqu'au tick cible et prix implicite
+                    exp_total = (1 + exp_ret) ** n - 1
+                    implied_price = last * (1 + exp_ret) ** n
+
+                    print(f"   {t}: prix={last}, beta={beta}")
+                    print(f"      E[R]/tick = {rf:.6f} + {beta} x ({rm:.6f} - {rf:.6f}) "
+                          f"= {exp_ret:.6f} [{ok}]")
+                    print(f"      sur {n} ticks : rendement attendu={exp_total:.2%}, "
+                          f"prix implicite au tick {state['target_tick']}={implied_price:.2f}")
 
                 # TODO : comparer avec la position, vérifier les limites
                 #        brute (250 000) / nette (100 000), envoyer les ordres
