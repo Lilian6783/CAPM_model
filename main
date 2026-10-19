@@ -1,35 +1,64 @@
-import httpx
 import time
+import httpx
 
-def main():
+import news_section as news
+
+TICKERS = ["ALPHA", "GAMMA", "THETA"]
+
+
+def get_last(client, ticker):
+    resp = client.get('/securities', params={'ticker': ticker}).json()
+    return resp[0].get('last')
+
+
+def main(client):
+    state = news.new_state()
+    last_printed_tick = None
+
     while True:
-        current_case = client.get('/case').json()
-        current_tick = current_case.get('tick')
+        tick = client.get('/case').json().get('tick')
 
-        # intervalle pour commencer un peu après le début et
-        #       finir un peu avant la fin
-        if 1 < current_tick < 599:
-            param_alpha = {'ticker': 'ALPHA'}
-            resp = client.get('/securities', params=param_alpha).json()
-            alpha_last = resp[0].get('last')
+        # commencer un peu après le début et finir un peu avant la fin
+        if 1 < tick < 599:
 
-            param_gamma = {'ticker': 'GAMMA'}
-            resp = client.get('/securities', params=param_gamma).json()
-            gamma_last = resp[0].get('last')
+            # 1) Lire les nouvelles (met à jour state)
+            if news.read_news(client, state):
+                print(f"[tick {tick}] state mis à jour : {state}")
 
-            param_theta = {'ticker': 'THETA'}
-            resp = client.get('/securities', params=param_theta).json()
-            theta_last = resp[0].get('last')
+            # 2) Agir seulement si on a les bêtas, rf et une prévision à venir
+            ready = (
+                state["rf"] is not None
+                and len(state["beta"]) == len(TICKERS)
+                and state["target_tick"] is not None
+                and state["target_tick"] > tick
+            )
 
-            pass
+            if ready and tick != last_printed_tick:
+                last_printed_tick = tick   # un seul affichage par tick
+
+                ritm_now = get_last(client, "RITM")
+                n = state["target_tick"] - tick
+                rm = (state["target_price"] / ritm_now) ** (1 / n) - 1  # rendement par tick
+
+                print(f"[tick {tick}] RITM={ritm_now}, cible={state['target_price']} "
+                      f"au tick {state['target_tick']}, rm/tick={rm:.6f}")
+
+                for t in TICKERS:
+                    exp_ret = news.get_exp_return(state, t, rm)
+                    last = get_last(client, t)
+                    print(f"   {t}: prix={last}, beta={state['beta'][t]}, E[R]/tick={exp_ret:.6f}")
+
+                # TODO : comparer avec la position, vérifier les limites
+                #        brute (250 000) / nette (100 000), envoyer les ordres
+
+        time.sleep(0.2)
 
 
 if __name__ == "__main__":
-    API_KEY = "API_KEY"
+    API_KEY = "VZETG60P"
     API_PORT = 9999
     url = f"http://localhost:{API_PORT}/v1"
     params = {'key': API_KEY}
 
     with httpx.Client(base_url=url, params=params) as client:
-        main()
-
+        main(client)
