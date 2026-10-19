@@ -1,74 +1,80 @@
 import re
 
-def news_section():
+# IDs des nouvelles déjà lues (évite de retraiter la même nouvelle)
+old_ids = set()
 
-    old_news = list()
 
-    def reset_news_reader():
-        global old_news
-        old_news = list()
+def new_state():
+    """État initial partagé entre main et ce module."""
+    return {
+        "rf": None,            # taux sans risque par tick (ex: 0.000107)
+        "beta": {},            # {"ALPHA": 1.3, "GAMMA": 1.46, "THETA": 2.3}
+        "target_tick": None,   # tick où RITM atteindra le prix prévu
+        "target_price": None,  # prix prévu de RITM
+    }
 
-    def gen_basedata_capm():
-        return {
-            "rf": "0.02",
-            "rm": "0.08",
-            "beta": {"AAA": 1.0, "BBB": 1.0, "CCC": 1.0}
+
+def get_all_news(client):
+    return client.get('/news', params={'limit': 50}).json()
+
+
+def parse_news(text):
+    """Extrait ce que contient une nouvelle. Retourne un dict (vide si rien)."""
+    out = {}
+
+    # Première nouvelle : bêtas + taux sans risque
+    if "historical beta" in text:
+        out["beta"] = {
+            t.upper(): float(v)
+            for t, v in re.findall(
+                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*([\d.]+)", text
+            )
         }
+        m = re.search(r"risk free is\s*:\s*([\d.]+)\s*%", text)
+        if m:
+            out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
 
-    def get_all_news(client):
-        return client.get('/news', params={'limit': -1}).json()
+    # Nouvelles de prévision : tick cible + prix prévu
+    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text)
+    if m:
+        out["target_tick"] = int(m.group(1))
+        out["target_price"] = float(m.group(2).replace(",", ""))
 
-    def extract_news(text):
-        matches = re.findall(r'(-?\d+(?:\.\d+)?)\s*(%?)', text)
-        if not matches:
-            return None
-        number, pct = matches[-1]
-        return float(number) / 100 if pct else float(number)
+    return out
 
-    def news_analysis(news):
-        headline = news.get("headline", "").lower()
-        body = news.get("body", "")
 
-        if "risk-free" in headline or "risk free" in headline:
-            kind, ticker = "rf", None
+def read_news(client, state, debug=True):
+    """Lit les nouvelles non lues et met à jour state.
+    Retourne True si au moins une nouvelle a changé l'état."""
+    changed = False
+    items = sorted(get_all_news(client), key=lambda x: x["news_id"])  # ancienne -> récente
 
-        elif "market" in headline:
-            kind, ticker = "rm", None
+    for item in items:
+        if item["news_id"] in old_ids:
+            continue
+        old_ids.add(item["news_id"])
 
-        elif "beta" in headline:
-            kind, ticker = "beta", news.get("ticker")
+        text = item.get("headline", "") + " " + item.get("body", "")
+        data = parse_news(text)
 
-        else:
-            return (None, None, None)
+        if debug:
+            print(f"NOUVELLE #{item['news_id']}: {item.get('body')} -> {data}")
 
-    def is_new_news_in_mail(client):
-        all_news = get_all_news(client)
-        if len(all_news) == 0:
-            return False
-        return all_news[0] not in old_news
+        if not data:
+            continue
 
-    def read_news(client, state):
-        for news in get_all_news(client) [::-1]:
-            if news in old_news:
-                continue
-            old_news.append(news)
+        state["beta"].update(data.pop("beta", {}))
+        state.update(data)
+        changed = True
 
-            kind, ticker, value = news_analysis(news)
-            if kind is None:
-                continue
+    return changed
 
-            if kind == "beta":
-                state["beta"][ticker] = value
 
-            else:
-                state[kind] = value
+def get_exp_return(state, ticker, rm):
+    """CAPM : E[Ri] = Rf + beta * (Rm - Rf)."""
+    return state["rf"] + state["beta"][ticker] * (rm - state["rf"])
 
-            return state
 
-    def get_exp_return(state, ticker):
-        return state["rf"] + state["beta"][ticker]*(state["rm"] - state["rf"])
-
-    def get_alpha(client, state, ticker, y_observed):
-        return y_observed - get_exp_return(state, ticker)
-
-print(get_alpha())
+def get_alpha(state, ticker, rm, y_observed):
+    """Écart entre le rendement observé et le rendement espéré."""
+    return y_observed - get_exp_return(state, ticker, rm)
