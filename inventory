@@ -27,7 +27,7 @@ FEE = 0.02                                   # $ per share, per transaction
 ROUND_TRIP_FEE = 2 * FEE
 DEAD_BAND = 500                              # ignore gaps < 500 shares
 MIN_CHUNK = 100                              # smallest chunk after shrinking
-UNWIND_TICKS = 2                             # start unwinding 2 ticks before the target
+UNWIND_TICKS = 0                             # go flat this many ticks before the target tick (0 = hold until it)
 MAX_PASSES = 40                              # safety against infinite loops
 
 
@@ -121,8 +121,11 @@ def compute_targets(tick, state, prices):
     if state["rf"] is None:
         print("   flat because: risk-free rate not received yet")
         return flat
-    if any(t not in state["beta"] for t in TICKERS):
-        print(f"   flat because: betas incomplete: {state['beta']}")
+    betas = {str(k).strip().upper(): v for k, v in state["beta"].items()}  # tolerate key case
+    missing = [t for t in TICKERS if t not in betas]
+    if missing:
+        print(f"   flat because: betas missing for {missing}; "
+              f"keys received: {[repr(k) for k in state['beta']]}")
         return flat
     if not prices.get(INDEX) or any(not prices.get(t) for t in TICKERS):
         print(f"   flat because: missing/zero price in {prices}")
@@ -136,7 +139,7 @@ def compute_targets(tick, state, prices):
     # Expected profit per share ($): price * E[Ri], E[Ri] = rf + beta * (rm - rf)
     c = []
     for t in TICKERS:
-        er = rf_h + state["beta"][t] * (rm_h - rf_h)
+        er = rf_h + betas[t] * (rm_h - rf_h)
         c.append(prices[t] * er)
 
     # Variables: [long_A, long_G, long_T, short_A, short_G, short_T] >= 0
