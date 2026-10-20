@@ -22,12 +22,38 @@ def main(client):
     state = news.new_state()
     last_printed_tick = None
     last_traded_tick = None
+    last_seen_tick = None
+    last_msg = None
+
+    print("Bot started, waiting for the case...")
 
     while True:
-        tick = client.get('/case').json().get('tick')
+        case = client.get('/case').json()
+        tick = case.get('tick')
+        status = case.get('status')
+        active = status in ("ACTIVE", None)
+
+        # Simulation restarted (tick went backwards): forget old news and old state,
+        # otherwise the new news (same ids as before) would be skipped as "already read"
+        if last_seen_tick is not None and tick < last_seen_tick:
+            print(f"[tick {tick}] simulation restarted -> resetting news and state")
+            news.reset()
+            state = news.new_state()
+            last_printed_tick = None
+            last_traded_tick = None
+        last_seen_tick = tick
+
+        # Tell the user why nothing is happening (printed only when it changes)
+        if not active or not (1 < tick < 599):
+            msg = f"Case status={status}, tick={tick}: outside the trading window, waiting..."
+            if msg != last_msg:
+                print(msg)
+                last_msg = msg
+        else:
+            last_msg = None
 
         # start a bit after the beginning and stop a bit before the end
-        if 1 < tick < 599:
+        if active and 1 < tick < 599:
 
             # 1) Read the news (updates state)
             if news.read_news(client, state):
