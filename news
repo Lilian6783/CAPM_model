@@ -27,15 +27,16 @@ def parse_news(text):
         out["beta"] = {
             t.upper(): float(v)
             for t, v in re.findall(
-                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*(\d+(?:\.\d+)?)", text
+                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*(\d+(?:\.\d+)?)",
+                text, re.IGNORECASE,
             )
         }
-        m = re.search(r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%", text)
+        m = re.search(r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%", text, re.IGNORECASE)
         if m:
             out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
 
     # Forecast news items: target tick + forecasted price
-    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text)
+    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text, re.IGNORECASE | re.DOTALL)
     if m:
         out["target_tick"] = int(m.group(1))
         out["target_price"] = float(m.group(2).replace(",", ""))
