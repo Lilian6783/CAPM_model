@@ -1,1 +1,204 @@
 
+import time
+
+#Setup
+TICKERS = ["ALPHA", "GAMMA", "THETA"]
+INDEX = "RITM"
+
+GROSS_LIMIT = 250_000
+NET_LIMIT = 100_000
+SAFETY = 0.90                                
+GROSS_INT = int(GROSS_LIMIT * SAFETY)       
+NET_INT = int(NET_LIMIT * SAFETY)            
+
+MAX_ORDER = 10_000                           
+FEE = 0.02                                   
+ROUND_TRIP_FEE = 2 * FEE
+DEAD_BAND = 500                              
+MIN_CHUNK = 100                              
+UNWIND_TICKS = 2                             
+MAX_PASSES = 40                              
+
+
+#Info queries
+def get_securities(client):
+    return {s["ticker"]: s for s in client.get("/securities").json()}
+
+
+def get_positions(client):
+    secs = get_securities(client)
+    return {t: int(secs[t]["position"]) for t in TICKERS}
+
+
+def gross_net(pos):
+    """(brute, nette) : brute = somme des |positions|, nette = somme signée."""
+    return sum(abs(v) for v in pos.values()), sum(pos.values())
+
+
+# Trades
+def send_market_order(client, ticker, signed_qty):
+    """signed_qty > 0 = buy, < 0 = sell. Return True if trade accepted"""
+    qty = abs(int(signed_qty))
+    if qty == 0:
+        return False
+    r = client.post("/orders", params={"ticker": ticker, "type": "MARKET", "quantity": qty, "action": "BUY" if signed_qty > 0 else "SELL"})
+    if not r.is_success:
+        print(f"trade denied {ticker} {signed_qty}: {r.status_code} {r.text}")
+    return r.is_success
+
+
+#Inventory management
+def trade_allowed(pos, ticker, signed_qty):
+    """ pretrade verification """
+    g0, n0 = gross_net(pos)
+    new = dict(pos)
+    new[ticker] += signed_qty
+    g1, n1 = gross_net(new)
+
+    reduces = g1 <= g0 and abs(n1) <= abs(n0)
+    within = g1 <= GROSS_INT and abs(n1) <= NET_INT
+    return reduces or within
+
+
+def emergency_check(client):
+    """ reached limit notification """
+    pos = get_positions(client)
+    g, n = gross_net(pos)
+    if g <= GROSS_INT and abs(n) <= NET_INT:
+        return False
+
+    print(f"Warning limit reached: gross={g}, net={n} -> you must reduce your positions")
+
+    if abs(n) > NET_INT:
+        # Curb the greatest active position
+        sign = 1 if n > 0 else -1
+        candidates = {t: v for t, v in pos.items() if v * sign > 0}
+        t = max(candidates, key=lambda k: abs(candidates[k]))
+        excess = abs(n) - NET_INT
+    else:
+        t = max(pos, key=lambda k: abs(pos[k]))
+        excess = g - GROSS_INT
+
+    qty = min(MAX_ORDER, abs(pos[t]), excess)
+    return send_market_order(client, t, -qty if pos[t] > 0 else qty)
+
+
+#Targets
+def compute_targets(tick, state, prices):
+    state : dict de news_section (clés rf, beta, target_tick, target_price)
+    prices: {"RITM": ..., "ALPHA": ..., "GAMMA": ..., "THETA": ...} (last price)
+    """
+    flat = {t: 0 for t in TICKERS}
+
+    n = state["target_tick"] - tick
+    if n <= UNWIND_TICKS or state["rf"] is None:
+        return flat
+    if any(t not in state["beta"] for t in TICKERS):
+        return flat
+    if not prices.get(INDEX) or any(not prices.get(t) for t in TICKERS):
+        return flat
+
+    from scipy.optimize import linprog
+
+    rm_estimates = state["target_price"] / prices[INDEX] - 1.0  
+    rf_estimates = state["rf"] * n                               
+
+    # Expected return per share : price * E[Ri], E[Ri] = rf + beta * (rm - rf)
+    c = []
+    for t in TICKERS:
+        er = rf_h + state["beta"][t] * (rm_h - rf_h)
+        c.append(prices[t] * er)
+
+    # Variables : [long_A, long_G, long_T, short_A, short_G, short_T] >= 0
+    k = len(TICKERS)
+    obj = [-(ci - ROUND_TRIP_FEE) for ci in c] + [-(-ci - ROUND_TRIP_FEE) for ci in c]
+
+    A_ub = [
+        # gross : sum(long + short)
+        [1] * (2 * k),                 
+        # net : long - short
+        [1] * k + [-1] * k,             
+        # net : short - long
+        [-1] * k + [1] * k,            
+    ]
+    b_ub = [GROSS_INT, NET_INT, NET_INT]
+    bounds = [(0, GROSS_INT)] * (2 * k)
+
+    res = linprog(obj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    if not res.success:
+        return flat
+
+    x = res.x
+    return {t: int(x[i] - x[i + k]) for i, t in enumerate(TICKERS)} 
+
+
+# ----------------------------- EXÉCUTION ------------------------------------
+def execute_towards(client, targets):
+    """Amène les positions vers les cibles.
+
+    On fait plusieurs passes : à chaque passe, UNE tranche (<= 10 000) par titre,
+    ordres réducteurs d'abord. Ainsi les achats et les ventes s'alternent et les
+    limites nette / brute ne bloquent pas un titre en attendant l'autre."""
+    pos = get_positions(client)
+
+    for _ in range(MAX_PASSES):
+        # Titres qui ont encore un écart significatif (ou à fermer à zéro)
+        diffs = {}
+        for t in TICKERS:
+            d = targets[t] - pos[t]
+            closing = targets[t] == 0 and pos[t] != 0
+            if abs(d) >= DEAD_BAND or closing:
+                diffs[t] = d
+        if not diffs:
+            break
+
+        # Réduire d'abord (libère de la capacité), augmenter ensuite
+        order = sorted(diffs, key=lambda t: abs(pos[t] + diffs[t]) >= abs(pos[t]))
+
+        progressed = False
+        for t in order:
+            remaining = targets[t] - pos[t]
+            if remaining == 0:
+                continue
+            sign = 1 if remaining > 0 else -1
+            chunk = min(abs(remaining), MAX_ORDER)
+
+            # Réduire la tranche jusqu'à passer le test pré-trade
+            while chunk > 0 and not trade_allowed(pos, t, sign * chunk):
+                chunk //= 2
+            if chunk == 0:
+                continue
+            if chunk < MIN_CHUNK and abs(remaining) >= MIN_CHUNK:
+                continue                      # tranche trop petite pour valoir les frais
+
+            if not send_market_order(client, t, sign * chunk):
+                continue
+            time.sleep(0.05)
+
+            new_pos = get_positions(client)   # re-valider la position réelle
+            if new_pos[t] != pos[t]:
+                progressed = True
+            pos = new_pos
+
+        if not progressed:
+            break
+
+
+# ----------------------------- POINT D'ENTRÉE POUR MAIN ---------------------
+def rebalance(client, tick, state):
+    """Un appel par tick : calcule les cibles puis exécute.
+    Retourne les cibles, ou None si on n'a pas encore de prévision."""
+    if state["target_tick"] is None:
+        return None
+
+    secs = get_securities(client)
+
+    if tick >= state["target_tick"]:
+        targets = {t: 0 for t in TICKERS}             # prévision expirée : à plat
+    else:
+        prices = {t: secs[t]["last"] for t in TICKERS + [INDEX]}
+        targets = compute_targets(tick, state, prices)
+
+    print(f"[tick {tick}] cibles: {targets}")
+    execute_towards(client, targets)
+    return targets
