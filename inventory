@@ -114,11 +114,18 @@ def compute_targets(tick, state, prices):
     flat = {t: 0 for t in TICKERS}
 
     n = state["target_tick"] - tick
-    if n <= UNWIND_TICKS or state["rf"] is None:
+    if n <= UNWIND_TICKS:
+        print(f"   flat because: only {n} tick(s) left before the target tick "
+              f"{state['target_tick']} (unwind window = {UNWIND_TICKS})")
+        return flat
+    if state["rf"] is None:
+        print("   flat because: risk-free rate not received yet")
         return flat
     if any(t not in state["beta"] for t in TICKERS):
+        print(f"   flat because: betas incomplete: {state['beta']}")
         return flat
     if not prices.get(INDEX) or any(not prices.get(t) for t in TICKERS):
+        print(f"   flat because: missing/zero price in {prices}")
         return flat
 
     from scipy.optimize import linprog
@@ -146,6 +153,7 @@ def compute_targets(tick, state, prices):
 
     res = linprog(obj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
     if not res.success:
+        print(f"   flat because: optimizer failed: {res.message}")
         return flat
 
     x = res.x
@@ -233,6 +241,8 @@ def rebalance(client, tick, state):
 
     if tick >= state["target_tick"]:
         targets = {t: 0 for t in TICKERS}             # forecast expired: go flat
+        print(f"   flat because: forecast expired (tick {tick} >= target tick "
+              f"{state['target_tick']}), waiting for a new forecast")
     else:
         prices = {t: secs[t]["last"] for t in TICKERS + [INDEX]}
         targets = compute_targets(tick, state, prices)
