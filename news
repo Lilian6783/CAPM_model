@@ -4,6 +4,11 @@ import re
 old_ids = set()
 
 
+def reset():
+    """Forget the news already read (call when the simulation restarts)."""
+    old_ids.clear()
+
+
 def new_state():
     """Initial state shared between main and this module."""
     return {
