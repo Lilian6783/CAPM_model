@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import traceback
 import httpx
 
 # Lets Python import news.py and inventory.py even if the script is launched from another folder
@@ -33,10 +34,14 @@ def main(client):
                 print(f"[tick {tick}] state updated: {state}")
 
             # 2) Trading: safety net every loop, rebalance once per new tick
-            inventory.emergency_check(client)
-            if tick != last_traded_tick:
-                last_traded_tick = tick
-                inventory.rebalance(client, tick, state)
+            try:
+                inventory.emergency_check(client)
+                if tick != last_traded_tick:
+                    last_traded_tick = tick
+                    inventory.rebalance(client, tick, state)
+            except Exception:
+                print(f"[tick {tick}] ERROR while trading:")
+                traceback.print_exc()
 
             # 3) Debug prints: only if we have the betas, rf and an upcoming forecast
             ready = (
