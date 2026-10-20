@@ -58,8 +58,10 @@ def send_market_order(client, ticker, signed_qty):
         "quantity": qty,
         "action": "BUY" if signed_qty > 0 else "SELL",
     })
-    if not r.is_success:
-        print(f"Order denied {ticker} {signed_qty}: {r.status_code} {r.text}")
+    if r.is_success:
+        print(f"   order sent: {'BUY' if signed_qty > 0 else 'SELL'} {qty} {ticker}")
+    else:
+        print(f"   ORDER DENIED {ticker} {signed_qty}: {r.status_code} {r.text}")
     return r.is_success
 
 
@@ -151,6 +153,18 @@ def compute_targets(tick, state, prices):
 
 
 # ----------------------------- EXECUTION ------------------------------------
+def wait_for_position(client, ticker, old_value, tries=6, delay=0.1):
+    """Market orders may take a moment to show up in the position.
+    Polls a few times; returns the latest positions."""
+    pos = get_positions(client)
+    for _ in range(tries):
+        if pos[ticker] != old_value:
+            break
+        time.sleep(delay)
+        pos = get_positions(client)
+    return pos
+
+
 def execute_towards(client, targets):
     """Moves the positions toward the targets.
 
@@ -158,6 +172,7 @@ def execute_towards(client, targets):
     risk-reducing orders first. Buys and sells therefore alternate, and the
     net / gross limits don't block one ticker while waiting for another."""
     pos = get_positions(client)
+    print(f"   current positions: {pos}")
 
     for _ in range(MAX_PASSES):
         # Tickers that still have a significant gap (or must be closed to zero)
@@ -168,6 +183,7 @@ def execute_towards(client, targets):
             if abs(d) >= DEAD_BAND or closing:
                 diffs[t] = d
         if not diffs:
+            print("   done: positions at targets (or within the dead band)")
             break
 
         # Reduce first (frees up capacity), then increase
@@ -185,17 +201,20 @@ def execute_towards(client, targets):
             while chunk > 0 and not trade_allowed(pos, t, sign * chunk):
                 chunk //= 2
             if chunk == 0:
+                print(f"   {t}: blocked by the pre-trade check (limits)")
                 continue
             if chunk < MIN_CHUNK and abs(remaining) >= MIN_CHUNK:
-                continue                      # chunk too small to be worth the fees
+                print(f"   {t}: chunk {chunk} too small, skipped")
+                continue
 
             if not send_market_order(client, t, sign * chunk):
                 continue
-            time.sleep(0.05)
 
-            new_pos = get_positions(client)   # re-validate the actual position
+            new_pos = wait_for_position(client, t, pos[t])   # re-validate the real position
             if new_pos[t] != pos[t]:
                 progressed = True
+            else:
+                print(f"   WARNING: {t} position did not change after the order")
             pos = new_pos
 
         if not progressed:
@@ -207,6 +226,7 @@ def rebalance(client, tick, state):
     """One call per tick: computes the targets, then executes.
     Returns the targets, or None if there is no forecast yet."""
     if state["target_tick"] is None:
+        print(f"[tick {tick}] no forecast received yet -> no trading")
         return None
 
     secs = get_securities(client)
