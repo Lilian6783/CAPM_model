@@ -20,6 +20,7 @@ def get_last(client, ticker):
 def main(client):
     state = news.new_state()
     last_printed_tick = None
+    last_traded_tick = None
 
     while True:
         tick = client.get('/case').json().get('tick')
@@ -31,7 +32,13 @@ def main(client):
             if news.read_news(client, state):
                 print(f"[tick {tick}] state updated: {state}")
 
-            # 2) Act only if we have the betas, rf and an upcoming forecast
+            # 2) Trading: safety net every loop, rebalance once per new tick
+            inventory.emergency_check(client)
+            if tick != last_traded_tick:
+                last_traded_tick = tick
+                inventory.rebalance(client, tick, state)
+
+            # 3) Debug prints: only if we have the betas, rf and an upcoming forecast
             ready = (
                 state["rf"] is not None
                 and len(state["beta"]) == len(TICKERS)
