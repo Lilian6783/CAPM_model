@@ -1,16 +1,16 @@
 import re
 
-# IDs des nouvelles déjà lues (évite de retraiter la même nouvelle)
+# IDs of the news items already read (avoids processing the same item twice)
 old_ids = set()
 
 
 def new_state():
-    """État initial partagé entre main et ce module."""
+    """Initial state shared between main and this module."""
     return {
-        "rf": None,            # taux sans risque par tick (ex: 0.000107)
+        "rf": None,            # risk-free rate per tick (e.g. 0.000107)
         "beta": {},            # {"ALPHA": 1.3, "GAMMA": 1.46, "THETA": 2.3}
-        "target_tick": None,   # tick où RITM atteindra le prix prévu
-        "target_price": None,  # prix prévu de RITM
+        "target_tick": None,   # tick at which RITM reaches the forecasted price
+        "target_price": None,  # forecasted RITM price
     }
 
 
@@ -19,10 +19,10 @@ def get_all_news(client):
 
 
 def parse_news(text):
-    """Extrait ce que contient une nouvelle. Retourne un dict (vide si rien)."""
+    """Extracts what a news item contains. Returns a dict (empty if nothing)."""
     out = {}
 
-    # Première nouvelle : bêtas + taux sans risque
+    # First news item: betas + risk-free rate
     if "historical beta" in text:
         out["beta"] = {
             t.upper(): float(v)
@@ -34,7 +34,7 @@ def parse_news(text):
         if m:
             out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
 
-    # Nouvelles de prévision : tick cible + prix prévu
+    # Forecast news items: target tick + forecasted price
     m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text)
     if m:
         out["target_tick"] = int(m.group(1))
@@ -44,10 +44,10 @@ def parse_news(text):
 
 
 def read_news(client, state, debug=True):
-    """Lit les nouvelles non lues et met à jour state.
-    Retourne True si au moins une nouvelle a changé l'état."""
+    """Reads unread news items and updates state.
+    Returns True if at least one news item changed the state."""
     changed = False
-    items = sorted(get_all_news(client), key=lambda x: x["news_id"])  # ancienne -> récente
+    items = sorted(get_all_news(client), key=lambda x: x["news_id"])  # oldest -> newest
 
     for item in items:
         if item["news_id"] in old_ids:
@@ -58,7 +58,7 @@ def read_news(client, state, debug=True):
         data = parse_news(text)
 
         if debug:
-            print(f"NOUVELLE #{item['news_id']}: {item.get('body')} -> {data}")
+            print(f"NEWS #{item['news_id']}: {item.get('body')} -> {data}")
 
         if not data:
             continue
@@ -71,10 +71,10 @@ def read_news(client, state, debug=True):
 
 
 def get_exp_return(state, ticker, rm):
-    """CAPM : E[Ri] = Rf + beta * (Rm - Rf)."""
+    """CAPM: E[Ri] = Rf + beta * (Rm - Rf)."""
     return state["rf"] + state["beta"][ticker] * (rm - state["rf"])
 
 
 def get_alpha(state, ticker, rm, y_observed):
-    """Écart entre le rendement observé et le rendement espéré."""
+    """Gap between the observed return and the expected return."""
     return y_observed - get_exp_return(state, ticker, rm)
