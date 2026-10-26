@@ -4,10 +4,11 @@ import time
 import traceback
 import httpx
 
-# Lets Python import news.py even if the script is launched from another folder
+# Lets Python import news.py and pricing.py even if the script is launched from another folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import news
+import pricing
 
 FIRST_TICK = 1      # on lit les nouvelles seulement si tick > FIRST_TICK
 LAST_TICK = 599     # ... et tick < LAST_TICK (à ajuster selon la durée du cas)
@@ -77,6 +78,7 @@ def main(client, max_loops=None):
                 state = news.new_state()
                 seen_ids = set()
                 was_in_window = False
+                pricing.reset()
             last_seen_tick = tick
 
             in_window = active and FIRST_TICK < tick < LAST_TICK
@@ -105,6 +107,13 @@ def main(client, max_loops=None):
                 # 2) Mettre à jour le state (rien n'est affiché s'il n'y a pas de nouvelle)
                 if news.read_news(client, state):
                     print(f"[tick {tick}] state updated: {state}")
+
+                # 3) Pricing CAPM + envoi des trades (une fois par tick)
+                try:
+                    pricing.update_and_trade(client, tick, state)
+                except Exception:
+                    print(f"[tick {tick}] ERROR while pricing/trading:")
+                    traceback.print_exc()
 
         except KeyboardInterrupt:
             print("\nArrêt demandé (Ctrl+C).")
