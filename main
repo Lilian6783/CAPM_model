@@ -1,14 +1,4 @@
-import httpx
-import time
-import news_section as news
-
-TICKERS = ["ALPHA", "GAMMA", "THETA"]
-
-def get_last(client, ticker):
-    return client.get('/securities', params={'ticker': ticker}).json()[0]['last']
-
-def main(client):
-    state = news.new_state()import os
+import os
 import sys
 import time
 import traceback
@@ -129,28 +119,4 @@ if __name__ == "__main__":
     params = {'key': API_KEY}
 
     with httpx.Client(base_url=url, params=params) as client:
-        main(client)
-
-    while True:
-        tick = client.get('/case').json()['tick']
-
-        if 1 < tick < 599:
-            news.read_news(client, state)          # met à jour state
-
-            # on attend d'avoir bêtas + prévision avant d'agir
-            if state["rf"] is not None and state["target_tick"] and state["target_tick"] > tick:
-                ritm_now = get_last(client, "RITM")
-                n = state["target_tick"] - tick
-                rm = (state["target_price"] / ritm_now) ** (1 / n) - 1   # rendement par tick
-
-                for t in TICKERS:
-                    exp_ret = news.get_exp_return(state, t, rm)
-                    # ... comparer avec la position, vérifier les limites, envoyer les ordres
-
-        time.sleep(0.2)
-
-if __name__ == "__main__":
-    API_KEY = "VZETG60P"
-    url = "http://localhost:9999/v1"
-    with httpx.Client(base_url=url, params={'key': API_KEY}) as client:
         main(client)
