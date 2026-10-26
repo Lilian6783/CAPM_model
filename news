@@ -1,157 +1,49 @@
-"""
-news.py : lecture et analyse des nouvelles du cas CAPM.
-
-Les variables d'état (betas, rf, forecasts, ...) vivent dans CE module.
-Dans main.py, on les lit avec  `import news`  puis  `news.betas`, `news.rf`, etc.
-(Ne pas utiliser `from news import *` : les variables réassignées comme rf
-ne seraient pas mises à jour côté main.)
-"""
 import re
 
-# ----------------------------------------------------------------------
-# ÉTAT : variables créées à partir des nouvelles
-# ----------------------------------------------------------------------
-old_news = list()       # nouvelles déjà lues
+old_ids = set()
 
-betas = {"ALPHA": None, "GAMMA": None, "THETA": None}
-rf_pct = None           # taux sans risque par tick, en % (ex: 0.0107)
-rf = None               # taux sans risque par tick, en décimal (ex: 0.000107)
-
-# Chaque prédiction : {"news_tick", "target_tick", "ticker", "prix_prevu"}
-forecasts = list()
-target_tick = None      # tick auquel RITM atteindra le prix prévu
-ritm_prix_prevu = None  # prix prévu de RITM
-
-
-# ----------------------------------------------------------------------
-# LECTURE
-# ----------------------------------------------------------------------
-def reset_news_reader():
-    """Remet tout l'état à zéro (nouvelle simulation)."""
-    global old_news, rf_pct, rf, forecasts, target_tick, ritm_prix_prevu
-    old_news = list()
-    for k in betas:
-        betas[k] = None
-    rf_pct = rf = target_tick = ritm_prix_prevu = None
-    forecasts = list()
-    print("[RESET] Lecteur de nouvelles réinitialisé.")
-
+def new_state():
+    return {"rf": None, "beta": {}, "target_tick": None, "target_price": None}
 
 def get_all_news(client):
-    # toutes les nouvelles du serveur (la plus récente en premier)
-    return client.get('/news', params={'limit': -1}).json()
+    return client.get('/news', params={'limit': 50}).json()
 
+def parse_news(text):
+    """Retourne un dict avec ce que la nouvelle contient."""
+    out = {}
 
-def get_new_news(client):
-    """Nouvelles pas encore lues, de la plus ancienne à la plus récente."""
-    all_news = get_all_news(client)
-    new_ones = []
-    for n in all_news[::-1]:
-        if n in old_news:
+    if "historical beta" in text:
+        out["beta"] = {
+            t.upper(): float(v)
+            for t, v in re.findall(r"(Alpha|Gamma|Theta) historical beta is\s*:\s*([\d.]+)", text)
+        }
+        m = re.search(r"risk free is\s*:\s*([\d.]+)\s*%", text)
+        if m:
+            out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
+
+    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text)
+    if m:
+        out["target_tick"] = int(m.group(1))
+        out["target_price"] = float(m.group(2).replace(",", ""))
+
+    return out
+
+def read_news(client, state):
+    """Lit les nouvelles non lues et met à jour state. Retourne True si changement."""
+    changed = False
+    for item in reversed(get_all_news(client)):      # plus ancienne -> plus récente
+        if item["news_id"] in old_ids:
             continue
-        old_news.append(n)
-        new_ones.append(n)
-    if new_ones:
-        print(f"[API] {len(new_ones)} nouvelle(s) non lue(s) "
-              f"({len(all_news)} au total).")
-    return new_ones
+        old_ids.add(item["news_id"])
 
+        data = parse_news(item.get("headline", "") + " " + item.get("body", ""))
+        if not data:
+            continue
 
-# ----------------------------------------------------------------------
-# AFFICHAGE
-# ----------------------------------------------------------------------
-def print_news(n):
-    print("\n" + "=" * 70)
-    print(">>> NOUVELLE REÇUE")
-    print(f"  news_id  : {n.get('news_id')}")
-    print(f"  tick     : {n.get('tick')}")
-    print(f"  ticker   : {n.get('ticker')}")
-    print(f"  headline : {n.get('headline')}")
-    print(f"  body     : {n.get('body')}")
-    print("=" * 70)
+        state["beta"].update(data.pop("beta", {}))
+        state.update(data)
+        changed = True
+    return changed
 
-
-def print_state():
-    print("\n--- ÉTAT ACTUEL DES VARIABLES ---")
-    for k, v in betas.items():
-        print(f"  Bêta {k:<6}: {v}")
-    print(f"  Rf (% par tick)  : {rf_pct}")
-    print(f"  Rf (décimal)     : {rf}")
-    print(f"  Nb de prédictions: {len(forecasts)}")
-    print(f"  Tick cible       : {target_tick}")
-    print(f"  Prix prévu RITM  : {ritm_prix_prevu}")
-    print("---------------------------------\n")
-
-
-# ----------------------------------------------------------------------
-# ANALYSE
-# ----------------------------------------------------------------------
-RE_BETA = re.compile(r"(Alpha|Gamma|Theta)\s+historical\s+beta\s+is\s*:\s*(\d+(?:\.\d+)?)", re.I)
-RE_RF = re.compile(r"risk\s*free\s+is\s*:\s*(\d+(?:\.\d+)?)\s*%", re.I)
-RE_FORECAST = re.compile(
-    r"at\s+tick\s+(\d+),\s*the\s+market\s+price\s+of\s+(\w+)\s+is\s+forecasted\s+to\s+be\s+\$?\s*([\d,]+(?:\.\d+)?)",
-    re.I)
-
-
-def analyse_news(n):
-    """Met à jour les variables du module. Retourne 'welcome', 'forecast' ou 'inconnue'."""
-    global rf_pct, rf, target_tick, ritm_prix_prevu
-
-    texte = f"{n.get('headline', '')} {n.get('body', '')}"
-    type_news = "inconnue"
-
-    for nom, val in RE_BETA.findall(texte):
-        type_news = "welcome"
-        betas[nom.upper()] = float(val)
-        print(f"[PARSE] Bêta {nom.upper()} = {float(val)}")
-
-    m = RE_RF.search(texte)
-    if m:
-        type_news = "welcome"
-        rf_pct = float(m.group(1))
-        rf = rf_pct / 100
-        print(f"[PARSE] Rf = {rf_pct}% par tick -> {rf} en décimal")
-
-    m = RE_FORECAST.search(texte)
-    if m:
-        type_news = "forecast"
-        target_tick = int(m.group(1))
-        ticker = m.group(2).upper()
-        ritm_prix_prevu = float(m.group(3).replace(",", ""))
-        forecasts.append({"news_tick": n.get("tick"), "target_tick": target_tick,
-                          "ticker": ticker, "prix_prevu": ritm_prix_prevu})
-        print(f"[PARSE] Prédiction : {ticker} = ${ritm_prix_prevu} au tick {target_tick} "
-              f"(reçue au tick {n.get('tick')})")
-
-    if type_news == "inconnue":
-        print("[PARSE] Format non reconnu (ignorée).")
-    return type_news
-
-
-def read_news(client):
-    """Lit, affiche et analyse les nouvelles non lues. Retourne True s'il y en avait."""
-    new_ones = get_new_news(client)
-    if not new_ones:
-        return False
-    for n in new_ones:
-        print_news(n)
-        print(f"[TYPE] {analyse_news(n)}")
-    print_state()
-    return True
-
-
-# ----------------------------------------------------------------------
-# TEST HORS-LIGNE : python news.py
-# ----------------------------------------------------------------------
-if __name__ == "__main__":
-    n1 = {"news_id": 1, "tick": 1, "ticker": "", "headline": "Welcome",
-          "body": "Welcome to the CAPM Case. The Alpha historical beta is : 1.3. "
-                  "The Gamma historical beta is : 1.46. The Theta historical beta is : 2.3. "
-                  "The historical risk free is : 0.0107% per tick."}
-    n2 = {"news_id": 2, "tick": 20, "ticker": "RITM", "headline": "Forecast",
-          "body": "Your analysts informed that at tick 43, the market price of RITM "
-                  "is forecasted to be $4582.58."}
-    for n in (n1, n2):
-        print_news(n)
-        print("[TYPE]", analyse_news(n))
-    print_state()
+def get_exp_return(state, ticker, rm):
+    return state["rf"] + state["beta"][ticker] * (rm - state["rf"])
