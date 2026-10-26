@@ -18,17 +18,21 @@ def print_new_news(client, seen_ids, tick):
     """Affiche chaque nouvelle UNE SEULE FOIS, au moment où elle apparaît."""
     all_news = client.get('/news', params={'limit': -1}).json()
     if not isinstance(all_news, list):      # réponse d'erreur du serveur
-        return
+        print(f"[tick {tick}] Réponse inattendue de /news : {all_news}")
+        return 0
+    shown = 0
     for n in all_news[::-1]:                # de la plus ancienne à la plus récente
         key = n.get('news_id')
         if key in seen_ids:
             continue
         seen_ids.add(key)
+        shown += 1
         print("\n" + "=" * 70)
         print(f"[tick {tick}] NOUVELLE #{key} (émise au tick {n.get('tick')})")
         print(f"  headline : {n.get('headline')}")
         print(f"  body     : {n.get('body')}")
         print("=" * 70)
+    return shown
 
 
 def main(client, max_loops=None):
@@ -36,9 +40,11 @@ def main(client, max_loops=None):
     seen_ids = set()
     last_seen_tick = None
     last_msg = None
+    connected = False
+    was_in_window = False
     loops = 0
 
-    print("Bot started, waiting for the case... (Ctrl+C pour arrêter)")
+    print(f"Bot démarré, connexion au serveur... (Ctrl+C pour arrêter)")
 
     while max_loops is None or loops < max_loops:
         loops += 1
@@ -48,6 +54,11 @@ def main(client, max_loops=None):
             tick = case.get('tick')
             status = case.get('status')
             active = status in ("ACTIVE", None)
+
+            # Confirmation de connexion (une seule fois)
+            if not connected and tick is not None:
+                connected = True
+                print(f"[OK] Connecté au serveur : status={status}, tick={tick}")
 
             # tick peut être None (case pas démarré / réponse d'erreur du serveur)
             if tick is None:
@@ -65,12 +76,14 @@ def main(client, max_loops=None):
                 news.reset()
                 state = news.new_state()
                 seen_ids = set()
+                was_in_window = False
             last_seen_tick = tick
 
             in_window = active and FIRST_TICK < tick < LAST_TICK
 
             # Message d'attente (affiché seulement quand il change)
             if not in_window:
+                was_in_window = False
                 msg = f"Case status={status}, tick={tick}: outside the window, waiting..."
                 if msg != last_msg:
                     print(msg)
@@ -80,7 +93,14 @@ def main(client, max_loops=None):
 
             if in_window:
                 # 1) Afficher les nouvelles dès qu'elles apparaissent
-                print_new_news(client, seen_ids, tick)
+                shown = print_new_news(client, seen_ids, tick)
+
+                # Entrée dans la fenêtre : on le dit une seule fois
+                if not was_in_window:
+                    was_in_window = True
+                    print(f"[tick {tick}] Simulation en cours : lecture des nouvelles active.")
+                    if shown == 0:
+                        print(f"[tick {tick}] Aucune nouvelle pour l'instant, en attente...")
 
                 # 2) Mettre à jour le state (rien n'est affiché s'il n'y a pas de nouvelle)
                 if news.read_news(client, state):
