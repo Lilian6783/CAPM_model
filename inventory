@@ -39,14 +39,34 @@ old_targets = {}
 _last_tick = None
 _last_inputs = None
 _last_missing = None
+_tickers_checked = False
 
 
 def reset():
     """À appeler quand une nouvelle simulation commence."""
-    global old_targets, _last_tick, _last_inputs, _last_missing
+    global old_targets, _last_tick, _last_inputs, _last_missing, _tickers_checked
     old_targets = {}
     _last_tick = _last_inputs = _last_missing = None
+    _tickers_checked = False
     print("[PRICING] Mémoire du pricing réinitialisée.")
+
+
+def check_tickers(client):
+    """Vérifie (une seule fois) que les tickers utilisés ici existent sur le serveur."""
+    global _tickers_checked
+    _tickers_checked = True
+    data = client.get('/securities').json()
+    if not isinstance(data, list):
+        print(f"[CHECK] Réponse inattendue de /securities : {data}")
+        return
+    found = [s.get("ticker") for s in data]
+    print(f"[CHECK] Tickers présents sur le serveur : {found}")
+    missing = [t for t in [MARKET_TICKER] + TICKERS if t not in found]
+    if missing:
+        print(f"[CHECK] ATTENTION : introuvables sur le serveur : {missing} "
+              f"-> corrige TICKERS / MARKET_TICKER en haut de pricing.py (orthographe et majuscules).")
+    else:
+        print("[CHECK] OK : tous les tickers attendus existent sur le serveur.")
 
 
 # ----------------------------------------------------------------------
@@ -256,6 +276,12 @@ def update_and_trade(client, tick, state):
     if tick == _last_tick:
         return
     _last_tick = tick
+
+    if not _tickers_checked:
+        try:
+            check_tickers(client)
+        except Exception as e:
+            print(f"[CHECK] Impossible de vérifier les tickers : {type(e).__name__}: {e}")
 
     # ÉTAPE 1 : données des nouvelles
     inputs, missing = read_inputs(state, tick)
