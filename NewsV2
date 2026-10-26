@@ -1,0 +1,111 @@
+import re
+
+# IDs of the news items already read (avoids processing the same item twice)
+old_ids = set()
+
+
+def reset():
+    """Forget the news already read (call when the simulation restarts)."""
+    old_ids.clear()
+
+
+def new_state():
+    """Initial state shared between main and this module."""
+    return {
+        "rf": None,            # risk-free rate per tick (e.g. 0.000107)
+        "beta": {},            # {"ALPHA": 1.3, "GAMMA": 1.46, "THETA": 2.3}
+        "target_tick": None,   # tick at which RITM reaches the forecasted price
+        "target_price": None,  # forecasted RITM price
+    }
+
+
+def get_all_news(client):
+    data = client.get('/news', params={'limit': 50}).json()
+    return data if isinstance(data, list) else []
+
+
+def parse_news(text):
+    """Extracts what a news item contains. Returns a dict (empty if nothing)."""
+    out = {}
+
+    # First news item: betas + risk-free rate
+    if "historical beta" in text.lower():
+        out["beta"] = {
+            t.upper(): float(v)
+            for t, v in re.findall(
+                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*(\d+(?:\.\d+)?)",
+                text, re.IGNORECASE,
+            )
+        }
+        m = re.search(r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%", text, re.IGNORECASE)
+        if m:
+            out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
+
+    # Forecast news items: target tick + forecasted price
+    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        out["target_tick"] = int(m.group(1))
+        out["target_price"] = float(m.group(2).replace(",", ""))
+
+    return out
+
+
+def print_news(item, data):
+    """Displays one news item in the console, followed by what was extracted from it."""
+    line = "=" * 70
+    print(f"\n{line}")
+    print(f"NEWS #{item.get('news_id')}  |  received at tick {item.get('tick')}")
+    if item.get("headline"):
+        print(f"Headline: {item['headline']}")
+    print(f"Body    : {item.get('body')}")
+    if data:
+        print(f"Parsed  : {data}")
+    else:
+        print("Parsed  : (nothing useful extracted from this news item)")
+    print(line)
+
+
+def read_news(client, state, debug=True):
+    """Reads unread news items, displays them (if debug) and updates state.
+    Returns True if at least one news item changed the state."""
+    changed = False
+    items = sorted(get_all_news(client), key=lambda x: x["news_id"])  # oldest -> newest
+
+    for item in items:
+        if item["news_id"] in old_ids:
+            continue
+        old_ids.add(item["news_id"])
+
+        text = (item.get("headline") or "") + " " + (item.get("body") or "")
+        data = parse_news(text)
+
+        if debug:
+            print_news(item, data)
+
+        if not data:
+            continue
+
+        state["beta"].update(data.pop("beta", {}))
+        state.update(data)
+        changed = True
+
+    return changed
+
+
+def show_all_news(client):
+    """Prints every news item currently available, without touching the state.
+    Handy to check what the server really sends."""
+    items = sorted(get_all_news(client), key=lambda x: x["news_id"])
+    print(f"{len(items)} news item(s) on the server")
+    for item in items:
+        print_news(item, parse_news((item.get("headline") or "") + " " + (item.get("body") or "")))
+
+
+def get_exp_return(state, ticker, rm):
+    """CAPM: E[Ri] = Rf + beta * (Rm - Rf)."""
+    return state["rf"] + state["beta"][ticker] * (rm - state["rf"])
+
+
+def get_alpha(state, ticker, rm, y_observed):
+    """Gap between the observed return and the expected return."""
+    return y_observed - get_exp_return(state, ticker, rm)
