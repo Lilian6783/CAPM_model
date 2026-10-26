@@ -1,0 +1,135 @@
+import os
+import sys
+import time
+import traceback
+import httpx
+
+# Lets Python import news.py even if the script is launched from another folder
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import news
+
+FIRST_TICK = 1      # on lit les nouvelles seulement si tick > FIRST_TICK
+LAST_TICK = 599     # ... et tick < LAST_TICK (à ajuster selon la durée du cas)
+POLL_SECONDS = 0.2  # pause entre deux cycles
+
+
+def print_new_news(client, seen_ids, tick):
+    """Affiche chaque nouvelle UNE SEULE FOIS, au moment où elle apparaît."""
+    all_news = client.get('/news', params={'limit': -1}).json()
+    if not isinstance(all_news, list):      # réponse d'erreur du serveur
+        print(f"[tick {tick}] Réponse inattendue de /news : {all_news}")
+        return 0
+    shown = 0
+    for n in all_news[::-1]:                # de la plus ancienne à la plus récente
+        key = n.get('news_id')
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        shown += 1
+        print("\n" + "=" * 70)
+        print(f"[tick {tick}] NOUVELLE #{key} (émise au tick {n.get('tick')})")
+        print(f"  headline : {n.get('headline')}")
+        print(f"  body     : {n.get('body')}")
+        print("=" * 70)
+    return shown
+
+
+def main(client, max_loops=None):
+    state = news.new_state()
+    seen_ids = set()
+    last_seen_tick = None
+    last_msg = None
+    connected = False
+    was_in_window = False
+    loops = 0
+
+    print(f"Algorithme lancé...")
+
+    while max_loops is None or loops < max_loops:
+        loops += 1
+
+        try:
+            case = client.get('/case').json()
+            tick = case.get('tick')
+            status = case.get('status')
+            active = status in ("ACTIVE", None)
+
+            # Confirmation de connexion (une seule fois)
+            if not connected and tick is not None:
+                connected = True
+                print(f"[OK] Connecté au serveur : status={status}, tick={tick}")
+
+            # tick peut être None (case pas démarré / réponse d'erreur du serveur)
+            if tick is None:
+                msg = f"Réponse /case sans tick (status={status}), en attente..."
+                if msg != last_msg:
+                    print(msg)
+                    last_msg = msg
+                time.sleep(1)
+                continue
+
+            # Simulation restarted (tick went backwards): forget old news and old state,
+            # otherwise the new news (same ids as before) would be skipped as "already read"
+            if last_seen_tick is not None and tick < last_seen_tick:
+                print(f"[tick {tick}] simulation restarted -> resetting news and state")
+                news.reset()
+                state = news.new_state()
+                seen_ids = set()
+                was_in_window = False
+            last_seen_tick = tick
+
+            in_window = active and FIRST_TICK < tick < LAST_TICK
+
+            # Message d'attente (affiché seulement quand il change)
+            if not in_window:
+                was_in_window = False
+                msg = f"Case status={status}, tick={tick}: outside the window, waiting..."
+                if msg != last_msg:
+                    print(msg)
+                    last_msg = msg
+            else:
+                last_msg = None
+
+            if in_window:
+                # 1) Afficher les nouvelles dès qu'elles apparaissent
+                shown = print_new_news(client, seen_ids, tick)
+
+                # Entrée dans la fenêtre : on le dit une seule fois
+                if not was_in_window:
+                    was_in_window = True
+                    print(f"[tick {tick}] Simulation en cours : lecture des nouvelles active.")
+                    if shown == 0:
+                        print(f"[tick {tick}] Aucune nouvelle pour l'instant, en attente...")
+
+                # 2) Mettre à jour le state (rien n'est affiché s'il n'y a pas de nouvelle)
+                if news.read_news(client, state):
+                    print(f"[tick {tick}] state updated: {state}")
+
+        except KeyboardInterrupt:
+            print("\nArrêt demandé (Ctrl+C).")
+            break
+        except (httpx.HTTPError, ValueError) as e:
+            print(f"[ERREUR RÉSEAU] {type(e).__name__}: {e} -> nouvel essai dans 2 s")
+            time.sleep(2)
+            continue
+        except Exception:
+            print("[ERREUR] Exception inattendue (la boucle continue) :")
+            traceback.print_exc()
+            time.sleep(1)
+            continue
+
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    API_KEY = "DM0NHTR5"
+    API_PORT = 9999
+    url = f"http://localhost:{API_PORT}/v1"
+    params = {'key': API_KEY}
+
+    try:
+        with httpx.Client(base_url=url, params=params, timeout=5.0) as client:
+            main(client)
+    except KeyboardInterrupt:
+        print("\nArrêt.")
