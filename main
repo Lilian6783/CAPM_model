@@ -1,122 +1,49 @@
-import os
-import sys
+"""
+main.py : point d'entrée. Se connecte au serveur RIT et appelle news.py.
+
+Lancer :  python main.py
+"""
 import time
-import traceback
 import httpx
 
-# Lets Python import news.py and inventory.py even if the script is launched from another folder
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import news   # <- lien avec news.py (variables accessibles via news.betas, news.rf, ...)
 
-import news
-import inventory
+"""
+information pour le serveur lors du cours
+server:10.6.32.193
+port:10000
 
-TICKERS = ["ALPHA", "GAMMA", "THETA"]
-
-
-def get_last(client, ticker):
-    resp = client.get('/securities', params={'ticker': ticker}).json()
-    return resp[0].get('last')
+information pour le serveur de pratique
+server:rit.fsa.ulaval.ca
+port:100__
+"""
+API_KEY = "3KOTDBQX"
+API_PORT = 10000 + 1
+URL = f"http://localhost:{API_PORT}/v1"
 
 
 def main(client):
-    state = news.new_state()
-    last_printed_tick = None
-    last_traded_tick = None
-    last_seen_tick = None
-    last_msg = None
-
-    print("Bot started, waiting for the case...")
+    print("Analyse des nouvelles CAPM en cours...")
+    news.reset_news_reader()
+    last_tick = None
 
     while True:
         case = client.get('/case').json()
         tick = case.get('tick')
-        status = case.get('status')
-        active = status in ("ACTIVE", None)
 
-        # Simulation restarted (tick went backwards): forget old news and old state,
-        # otherwise the new news (same ids as before) would be skipped as "already read"
-        if last_seen_tick is not None and tick < last_seen_tick:
-            print(f"[tick {tick}] simulation restarted -> resetting news and state")
-            news.reset()
-            state = news.new_state()
-            last_printed_tick = None
-            last_traded_tick = None
-        last_seen_tick = tick
+        if tick != last_tick:
+            print(f"[TICK] tick = {tick} | status = {case.get('status')}")
+            last_tick = tick
 
-        # Tell the user why nothing is happening (printed only when it changes)
-        if not active or not (1 < tick < 599):
-            msg = f"Case status={status}, tick={tick}: outside the trading window, waiting..."
-            if msg != last_msg:
-                print(msg)
-                last_msg = msg
-        else:
-            last_msg = None
+        # Lit et affiche les nouvelles ; met à jour les variables de news.py
+        if news.read_news(client):
+            # Exemple d'accès aux variables depuis main :
+            print(f"[MAIN] betas={news.betas} | rf={news.rf} | "
+                  f"cible: tick {news.target_tick} -> {news.ritm_prix_prevu}")
 
-        # start a bit after the beginning and stop a bit before the end
-        if active and 1 < tick < 599:
-
-            # 1) Read the news (updates state)
-            if news.read_news(client, state):
-                print(f"[tick {tick}] state updated: {state}")
-
-            # 2) Trading: safety net every loop, rebalance once per new tick
-            try:
-                inventory.emergency_check(client)
-                if tick != last_traded_tick:
-                    last_traded_tick = tick
-                    inventory.rebalance(client, tick, state)
-            except Exception:
-                print(f"[tick {tick}] ERROR while trading:")
-                traceback.print_exc()
-
-            # 3) Debug prints: only if we have the betas, rf and an upcoming forecast
-            ready = (
-                state["rf"] is not None
-                and len(state["beta"]) == len(TICKERS)
-                and state["target_tick"] is not None
-                and state["target_tick"] > tick
-            )
-
-            if ready and tick != last_printed_tick:
-                last_printed_tick = tick   # print only once per tick
-
-                ritm_now = get_last(client, "RITM")
-                n = state["target_tick"] - tick
-                rm = (state["target_price"] / ritm_now) ** (1 / n) - 1  # return per tick
-
-                print(f"[tick {tick}] RITM={ritm_now}, target={state['target_price']} "
-                      f"at tick {state['target_tick']}, rm/tick={rm:.6f}")
-
-                rf = state["rf"]
-                print(f"   rf/tick={rf:.6f}, market premium (rm - rf)={rm - rf:.6f}")
-
-                for t in TICKERS:
-                    beta = state["beta"][t]
-                    exp_ret = news.get_exp_return(state, t, rm)
-                    last = get_last(client, t)
-
-                    # Manual check of the formula, independent of the function
-                    check = rf + beta * (rm - rf)
-                    ok = "OK" if abs(check - exp_ret) < 1e-12 else "ERROR"
-
-                    # Expected cumulative return up to the target tick, and implied price
-                    exp_total = (1 + exp_ret) ** n - 1
-                    implied_price = last * (1 + exp_ret) ** n
-
-                    print(f"   {t}: price={last}, beta={beta}")
-                    print(f"      E[R]/tick = {rf:.6f} + {beta} x ({rm:.6f} - {rf:.6f}) "
-                          f"= {exp_ret:.6f} [{ok}]")
-                    print(f"      over {n} ticks: expected return={exp_total:.2%}, "
-                          f"implied price at tick {state['target_tick']}={implied_price:.2f}")
-
-        time.sleep(0.2)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
-    API_KEY = "VZETG60P"
-    API_PORT = 9999
-    url = f"http://localhost:{API_PORT}/v1"
-    params = {'key': API_KEY}
-
-    with httpx.Client(base_url=url, params=params) as client:
+    with httpx.Client(base_url=URL, params={'key': API_KEY}) as client:
         main(client)
