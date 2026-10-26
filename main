@@ -8,6 +8,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import news
+import inventory
 
 FIRST_TICK = 1      # on lit les nouvelles seulement si tick > FIRST_TICK
 LAST_TICK = 599     # ... et tick < LAST_TICK (à ajuster selon la durée du cas)
@@ -44,7 +45,7 @@ def main(client, max_loops=None):
     was_in_window = False
     loops = 0
 
-    print(f"Bot démarré, connexion au serveur... (Ctrl+C pour arrêter)")
+    print(f"Algorithme lancé...")
 
     while max_loops is None or loops < max_loops:
         loops += 1
@@ -123,7 +124,7 @@ def main(client, max_loops=None):
 
 
 if __name__ == "__main__":
-    API_KEY = "VZETG60P"
+    API_KEY = "DM0NHTR5"
     API_PORT = 9999
     url = f"http://localhost:{API_PORT}/v1"
     params = {'key': API_KEY}
