@@ -1,115 +1,79 @@
-"""
-pricing.py : pricing CAPM à partir des nouvelles + envoi des trades.
 
-Appelé une fois par tick depuis main.py :  pricing.update_and_trade(client, tick, state)
-
-Étapes (chacune est affichée) :
-  1. Lecture des données des nouvelles (rf, bêtas, tick cible, prix cible de RITM)
-  2. Lecture du marché (dernier prix + position de chaque titre)
-  3. PRICING : rm -> E[R] CAPM de chaque titre -> prix cible
-  4. COMPARAISON : ancien prix cible vs nouveau, et prix cible vs prix du marché
-  5. SIZING : position souhaitée par titre
-  6. LIMITES : vérification brute / nette
-  7. TRADES : ordres MARKET (max 10 000 actions par ordre)
-  8. Positions après les trades
-"""
 import time
 
-TICKERS = ["ALPHA", "GAMMA", "THETA"]
-MARKET_TICKER = "RITM"
+tickers = ["ALPHA", "GAMMA", "THETA"]
+index = "RITM"
 
-# --- règles du cas ---
-FEE = 0.02                 # frais par action
-MAX_ORDER = 10_000         # taille max par transaction
-GROSS_LIMIT = 250_000      # limite brute (pénalité 500 000$)
-NET_LIMIT = 100_000        # limite nette (pénalité 200 000$)
+#Rules
+fee = 0.02
+max_order = 10_000
+gross_limit = 250_000
+net_limit = 100_000
 
-# --- paramètres de la stratégie (modifiables) ---
-SAFETY = 0.90                      # on reste à 90 % des limites
-GROSS_CAP = GROSS_LIMIT * SAFETY
-NET_CAP = NET_LIMIT * SAFETY
-BUDGET = NET_CAP                   # total d'actions (en valeur absolue) réparti entre les titres
-MIN_EDGE = 2 * FEE                 # écart cible-marché minimal ($) pour que ça vaille les frais
-MIN_TRADE = 500                    # on ignore les ajustements plus petits (évite le bruit)
-SEND_ORDERS = True                 # False = affiche les trades sans les envoyer
-VERBOSE = True                     # False = n'affiche le détail que si les données ou les trades changent
+#Settings
+safety = 0.99
+gross_cap = gross_limit * safety
+net_cap = net_limit * safety
+budget = net_cap
+min_edge = 2 * fee
+min_trade = 500
+SEND_ORDERS = True
+VERBOSE = False
 
-# --- mémoire entre deux ticks ---
+#Memory between 2 ticks
 old_targets = {}
 _last_tick = None
 _last_inputs = None
 _last_missing = None
 _tickers_checked = False
 
-
+#Resetting pricing memory when a new simulation starts
 def reset():
-    """À appeler quand une nouvelle simulation commence."""
     global old_targets, _last_tick, _last_inputs, _last_missing, _tickers_checked
     old_targets = {}
     _last_tick = _last_inputs = _last_missing = None
     _tickers_checked = False
-    print("[PRICING] Mémoire du pricing réinitialisée.")
+    print("[PRICING] Pricing memory is reset")
 
+###################################################################################
 
-def check_tickers(client):
-    """Vérifie (une seule fois) que les tickers utilisés ici existent sur le serveur."""
-    global _tickers_checked
-    _tickers_checked = True
-    data = client.get('/securities').json()
-    if not isinstance(data, list):
-        print(f"[CHECK] Réponse inattendue de /securities : {data}")
-        return
-    found = [s.get("ticker") for s in data]
-    print(f"[CHECK] Tickers présents sur le serveur : {found}")
-    missing = [t for t in [MARKET_TICKER] + TICKERS if t not in found]
-    if missing:
-        print(f"[CHECK] ATTENTION : introuvables sur le serveur : {missing} "
-              f"-> corrige TICKERS / MARKET_TICKER en haut de pricing.py (orthographe et majuscules).")
-    else:
-        print("[CHECK] OK : tous les tickers attendus existent sur le serveur.")
-
-
-# ----------------------------------------------------------------------
-# ÉTAPE 1 : données des nouvelles
-# ----------------------------------------------------------------------
+#Calling news inputs
 def read_inputs(state, tick):
-    """Retourne (inputs, None) si tout est prêt, sinon (None, message expliquant ce qui manque)."""
     rf = state.get("rf")
     betas = state.get("beta", {})
     target_tick = state.get("target_tick")
     target_price = state.get("target_price")
 
+    """ Printing missing info """
     missing = []
     if rf is None:
-        missing.append("taux sans risque")
-    if any(betas.get(t) is None for t in TICKERS):
-        missing.append("bêtas")
+        missing.append("risk-free rate")
+    if any(betas.get(t) is None for t in tickers):
+        missing.append("betas")
     if target_tick is None or target_price is None:
-        missing.append("prévision de RITM")
+        missing.append("RITM forecasts")
     if missing:
-        return None, "données manquantes dans les nouvelles : " + ", ".join(missing)
+        return None, "missing inputs in news: " + ", ".join(missing)
 
     if target_tick <= tick:
-        return None, (f"tick cible {target_tick} déjà atteint (tick actuel {tick}), "
-                      f"en attente d'une nouvelle prévision")
+        return None, (f"target tick {target_tick} already reached (current tick {tick}), "
+                      f"waiting for a new forecast")
 
-    return {"rf": rf, "betas": {t: betas[t] for t in TICKERS},
+    return {"rf": rf, "betas": {t: betas[t] for t in tickers},
             "target_tick": target_tick, "target_price": target_price,
             "n": target_tick - tick}, None
 
 
-# ----------------------------------------------------------------------
-# ÉTAPE 2 : marché
-# ----------------------------------------------------------------------
+
+# Requesting tickers index and tickers info
 def get_market(client):
-    """{ticker: {"last": prix, "position": quantité}} pour RITM et les 3 titres."""
     data = client.get('/securities').json()
     if not isinstance(data, list):
         raise RuntimeError(f"Réponse inattendue de /securities : {data}")
     out = {}
     for s in data:
         out[s.get("ticker")] = {"last": s.get("last"), "position": int(s.get("position") or 0)}
-    for t in [MARKET_TICKER] + TICKERS:
+    for t in [index] + tickers:
         if t not in out or not out[t]["last"]:
             raise RuntimeError(f"Prix indisponible pour {t} : {out.get(t)}")
     return out
@@ -120,7 +84,7 @@ def get_market(client):
 # ----------------------------------------------------------------------
 def price_targets(inputs, market, log):
     rf, n = inputs["rf"], inputs["n"]
-    ritm_now = market[MARKET_TICKER]["last"]
+    ritm_now = market[index]["last"]
 
     if rf > 0.01:
         log(f"[PRICING] ATTENTION : rf={rf} semble être en % et non en décimal par tick.")
@@ -133,7 +97,7 @@ def price_targets(inputs, market, log):
     log(f"[PRICING] rf/tick = {rf:.6f} | prime de marché (rm - rf) = {rm - rf:.6f}")
 
     res = {}
-    for t in TICKERS:
+    for t in tickers:
         beta = inputs["betas"][t]
         last = market[t]["last"]
         exp_ret = rf + beta * (rm - rf)              # CAPM : E[R] = rf + beta x (rm - rf)
@@ -149,7 +113,7 @@ def price_targets(inputs, market, log):
 # ----------------------------------------------------------------------
 def compare(res, log):
     edges = {}
-    for t in TICKERS:
+    for t in tickers:
         new = res[t]["target"]
         last = res[t]["last"]
         old = old_targets.get(t)
@@ -162,12 +126,12 @@ def compare(res, log):
 
         edge_cash = new - last
         edge_pct = new / last - 1
-        if edge_cash > MIN_EDGE:
-            verdict = "SOUS-ÉVALUÉ -> ACHAT"
-        elif edge_cash < -MIN_EDGE:
-            verdict = "SUR-ÉVALUÉ -> VENTE"
+        if edge_cash > min_edge:
+            verdict = "undervalued -> BUY"
+        elif edge_cash < -min_edge:
+            verdict = "overvalued -> SELL"
         else:
-            verdict = f"écart trop faible (< {MIN_EDGE:.2f}$ de frais) -> NEUTRE"
+            verdict = f"écart trop faible (< {min_edge:.2f}$ de frais) -> NEUTRE"
         log(f"[COMPARE] {t}: prix marché = {last} | cible - marché = {edge_cash:+.4f}$ "
             f"({edge_pct:+.2%}) | {verdict}")
 
@@ -181,17 +145,17 @@ def compare(res, log):
 # ----------------------------------------------------------------------
 def size_positions(edges, log):
     """Répartit BUDGET actions entre les titres au prorata de l'écart attendu (en %)."""
-    desired = {t: 0 for t in TICKERS}
-    active = {t: e for t, e in edges.items() if abs(e["edge_cash"]) > MIN_EDGE}
+    desired = {t: 0 for t in tickers}
+    active = {t: e for t, e in edges.items() if abs(e["edge_cash"]) > min_edge}
     total = sum(abs(e["edge_pct"]) for e in active.values())
     if not active or total == 0:
         log("[SIZING] Aucun titre avec un écart suffisant -> positions cibles = 0")
         return desired
     for t, e in active.items():
         w = abs(e["edge_pct"]) / total
-        qty = int(BUDGET * w)
+        qty = int(budget * w)
         desired[t] = qty if e["edge_cash"] > 0 else -qty
-        log(f"[SIZING] {t}: poids {w:.1%} x budget {BUDGET:,.0f} -> position souhaitée {desired[t]:+,}")
+        log(f"[SIZING] {t}: poids {w:.1%} x budget {budget:,.0f} -> position souhaitée {desired[t]:+,}")
     return desired
 
 
@@ -201,12 +165,12 @@ def size_positions(edges, log):
 def enforce_limits(desired, log):
     gross = sum(abs(v) for v in desired.values())
     net = sum(desired.values())
-    log(f"[LIMITES] brute = {gross:,} (max {GROSS_LIMIT:,}) | nette = {net:+,} (max ±{NET_LIMIT:,})")
+    log(f"[LIMITES] brute = {gross:,} (max {gross_limit:,}) | nette = {net:+,} (max ±{net_limit:,})")
     factor = 1.0
-    if gross > GROSS_CAP:
-        factor = min(factor, GROSS_CAP / gross)
-    if abs(net) > NET_CAP:
-        factor = min(factor, NET_CAP / abs(net))
+    if gross > gross_cap:
+        factor = min(factor, gross_cap / gross)
+    if abs(net) > net_cap:
+        factor = min(factor, net_cap / abs(net))
     if factor < 1:
         desired = {t: int(v * factor) for t, v in desired.items()}
         log(f"[LIMITES] Dépassement de la marge de sécurité -> positions réduites x{factor:.3f} : {desired}")
@@ -221,10 +185,10 @@ def enforce_limits(desired, log):
 def plan_trades(desired, positions, log):
     """Calcule les ordres à passer. Retourne (deltas, ordre_d_envoi)."""
     deltas = {}
-    for t in TICKERS:
+    for t in tickers:
         d = desired[t] - positions[t]
         closing = desired[t] == 0 and positions[t] != 0
-        if d != 0 and (abs(d) >= MIN_TRADE or closing):
+        if d != 0 and (abs(d) >= min_trade or closing):
             deltas[t] = d
         log(f"[TRADE] {t}: position actuelle {positions[t]:+,} -> souhaitée {desired[t]:+,} "
             f"| écart : {d:+,}" + ("" if t in deltas else "  (aucun ordre)"))
@@ -255,7 +219,7 @@ def execute_trades(client, deltas, ordered):
         action = "BUY" if d > 0 else "SELL"
         remaining = abs(d)
         while remaining > 0:
-            qty = min(MAX_ORDER, remaining)
+            qty = min(max_order, remaining)
             if SEND_ORDERS:
                 resp = post_order(client, t, action, qty)
                 if isinstance(resp, dict) and "order_id" in resp:
@@ -276,12 +240,6 @@ def update_and_trade(client, tick, state):
     if tick == _last_tick:
         return
     _last_tick = tick
-
-    if not _tickers_checked:
-        try:
-            check_tickers(client)
-        except Exception as e:
-            print(f"[CHECK] Impossible de vérifier les tickers : {type(e).__name__}: {e}")
 
     # ÉTAPE 1 : données des nouvelles
     inputs, missing = read_inputs(state, tick)
@@ -314,7 +272,7 @@ def update_and_trade(client, tick, state):
         edges = compare(res, log)                            # ÉTAPE 4
         desired = size_positions(edges, log)                 # ÉTAPE 5
         desired = enforce_limits(desired, log)               # ÉTAPE 6
-        positions = {t: market[t]["position"] for t in TICKERS}
+        positions = {t: market[t]["position"] for t in tickers}
         deltas, ordered = plan_trades(desired, positions, log)   # ÉTAPE 7 (plan)
 
         # on affiche tout le détail si VERBOSE, si les données ont changé ou s'il y a des ordres
@@ -326,7 +284,7 @@ def update_and_trade(client, tick, state):
         if deltas:
             execute_trades(client, deltas, ordered)          # ÉTAPE 7 (envoi)
             after = get_market(client)                       # ÉTAPE 8
-            pos = {t: after[t]["position"] for t in TICKERS}
+            pos = {t: after[t]["position"] for t in tickers}
             print(f"[POSITIONS] après trades : {pos} | brute={sum(abs(v) for v in pos.values()):,} "
                   f"| nette={sum(pos.values()):+,}")
     except Exception:
