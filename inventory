@@ -137,7 +137,7 @@ def compare(res, log):
 
 # Position sizing
 def position_sizing(edges, log):
-    """ Sizing budget between tickers considering espected edge %"""
+    """ Sizing budget between tickers considering expected edge %"""
     desired = {t: 0 for t in tickers}
     active = {t: e for t, e in edges.items() if abs(e["edge_cash"]) > min_edge}
     total = sum(abs(e["edge_pct"]) for e in active.values())
