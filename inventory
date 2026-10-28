@@ -105,18 +105,16 @@ def price_targets(inputs, market, log):
 
 # Comparison
 def compare(res, log):
-    if old is None:
-        log(f"[COMPARE] {t}: old target price = (first computation) | new = {new:.4f}")
-    else:
-        log(f"[COMPARE] {t}: old target price = {old:.4f} | new = {new:.4f} "
-        f"| variation = {new - old:+.4f}")
     edges = {}
     for t in tickers:
         new = res[t]["target"]
         last = res[t]["last"]
         old = old_targets.get(t)
-        """ Comparing old price vs. new price """
+
+        """ Comparing old target price vs. new target price """
         if old is None:
+            log(f"[COMPARE] {t}: old target price = (first computation) | new = {new:.4f}")
+        else:
             log(f"[COMPARE] {t}: old target price = {old:.4f} | new = {new:.4f} "
                 f"| variation = {new - old:+.4f}")
 
@@ -136,7 +134,6 @@ def compare(res, log):
         """ The new price becomes the old price for the next tick """
         old_targets[t] = new
     return edges
-
 
 
 # Position sizing
