@@ -56,7 +56,7 @@ def read_inputs(state, tick):
         return None, "missing inputs in news: " + ", ".join(missing)
 
     if target_tick <= tick:
-        return None, (f"target tick {target_tick} already reached (current tick {tick}), "
+        return None, (f"target tick {target_tick} already reached, "
                       f"waiting for a new forecast")
 
     return {"rf": rf, "betas": {t: betas[t] for t in tickers},
