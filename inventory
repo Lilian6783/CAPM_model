@@ -18,7 +18,7 @@ budget = net_cap
 min_edge = 2 * fee
 min_trade = 500
 SEND_ORDERS = True
-VERBOSE = False
+VERBOSE = True
 
 # Memory between 2 ticks
 old_targets = {}
