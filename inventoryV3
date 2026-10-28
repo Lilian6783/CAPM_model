@@ -184,7 +184,7 @@ def plan_trades(desired, positions, log):
         log(f"[TRADE] {t}: current positions {positions[t]:+,} => desired positions {desired[t]:+,} "
             f"| edge : {d:+,}" + ("" if t in deltas else "  (no trade)"))
     if not deltas:
-        log("[TRADE] No trade to send.")
+        log("[TRADE] No more trade to send.")
 
     """Sending trades reducing exposure"""
     ordered = sorted(deltas, key=lambda t: 0 if abs(positions[t] + deltas[t]) < abs(positions[t]) else 1)
