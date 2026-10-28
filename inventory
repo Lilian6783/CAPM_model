@@ -66,6 +66,15 @@ def read_inputs(state, tick):
 # Requesting tickers index and tickers info
 def get_market(client):
     data = client.get('/securities').json()
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected /securities response: {data}")
+    out = {}
+    for s in data:
+        out[s.get("ticker")] = {"last": s.get("last"), "position": int(s.get("position") or 0)}
+    for t in [index] + tickers:
+        if t not in out or not out[t]["last"]:
+            raise RuntimeError(f"Price unavailable for {t}: {out.get(t)}")
+    return out
 
 
 
@@ -96,6 +105,11 @@ def price_targets(inputs, market, log):
 
 # Comparison
 def compare(res, log):
+    if old is None:
+        log(f"[COMPARE] {t}: old target price = (first computation) | new = {new:.4f}")
+    else:
+        log(f"[COMPARE] {t}: old target price = {old:.4f} | new = {new:.4f} "
+        f"| variation = {new - old:+.4f}")
     edges = {}
     for t in tickers:
         new = res[t]["target"]
