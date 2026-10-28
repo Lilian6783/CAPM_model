@@ -1,30 +1,29 @@
 import re
 
-# IDs of the news items already read (avoids processing the same item twice)
 old_ids = set()
 
-#Réinitialisation des arguments contenus dans les nouvelles
+#Resetting news inputs
 def reset():
     old_ids.clear()
 
 
 def new_state():
-    """Initial state shared between main and this module."""
+    """Initial state called by main"""
     return {
-        "rf": None,            # risk-free rate per tick (e.g. 0.000107)
-        "beta": {},            # {"ALPHA": 1.3, "GAMMA": 1.46, "THETA": 2.3}
-        "target_tick": None,   # tick at which RITM reaches the forecasted price
-        "target_price": None,  # forecasted RITM price
+        "rf": None,
+        "beta": {},
+        "target_tick": None,
+        "target_price": None,
     }
 
-
+# Requesting all simulation news
 def get_all_news(client):
-    data = client.get('/news', params={'limit': 50}).json()
+    data = client.get('/news', params={'limit': 20}).json()
     return data if isinstance(data, list) else []
 
 
 def parse_news(text):
-    """Extracts what a news item contains. Returns a dict (empty if nothing)."""
+    """Extracts what a news item contains. Returns a dictionary (empty if nothing)"""
     out = {}
 
     # First news item: betas + risk-free rate
@@ -68,7 +67,8 @@ def read_news(client, state, debug=True):
     """Reads unread news items, displays them (if debug) and updates state.
     Returns True if at least one news item changed the state."""
     changed = False
-    items = sorted(get_all_news(client), key=lambda x: x["news_id"])  # oldest -> newest
+    """ Sorting from oldest to newest """
+    items = sorted(get_all_news(client), key=lambda x: x["news_id"])
 
     for item in items:
         if item["news_id"] in old_ids:
@@ -92,19 +92,8 @@ def read_news(client, state, debug=True):
 
 
 def show_all_news(client):
-    """Prints every news item currently available, without touching the state.
-    Handy to check what the server really sends."""
+    """Prints every news item currently available, without touching the state"""
     items = sorted(get_all_news(client), key=lambda x: x["news_id"])
     print(f"{len(items)} news item(s) on the server")
     for item in items:
         print_news(item, parse_news((item.get("headline") or "") + " " + (item.get("body") or "")))
-
-
-def get_exp_return(state, ticker, rm):
-    """CAPM: E[Ri] = Rf + beta * (Rm - Rf)."""
-    return state["rf"] + state["beta"][ticker] * (rm - state["rf"])
-
-
-def get_alpha(state, ticker, rm, y_observed):
-    """Gap between the observed return and the expected return."""
-    return y_observed - get_exp_return(state, ticker, rm)
