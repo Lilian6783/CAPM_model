@@ -1,4 +1,3 @@
-
 import time
 
 tickers = ["ALPHA", "GAMMA", "THETA"]
