@@ -11,8 +11,8 @@ import news
 import pricing
 
 FIRST_TICK = 1      # Reading news only if tick > FIRST_TICK
-LAST_TICK = 599     
-POLL_SECONDS = 0.2  
+LAST_TICK = 599
+POLL_SECONDS = 0.2
 
 
 #Printing news
@@ -99,12 +99,12 @@ def main(client, max_loops=None):
                 """Printing news when released """
                 shown = print_new_news(client, seen_ids, tick)
 
-                # Entrée dans la fenêtre : on le dit une seule fois
+                # Entering in window
                 if not was_in_window:
                     was_in_window = True
-                    print(f"[tick {tick}] Simulation en cours : lecture des nouvelles active.")
+                    print(f"[tick {tick}] Simulation in progress : reading active news")
                     if shown == 0:
-                        print(f"[tick {tick}] Aucune nouvelle pour l'instant, en attente...")
+                        print(f"[tick {tick}] No news released, waiting...")
 
                 """Updating state"""
                 if news.read_news(client, state):
@@ -118,7 +118,7 @@ def main(client, max_loops=None):
                     traceback.print_exc()
 
         except KeyboardInterrupt:
-            print("\nArrêt demandé (Ctrl+C).")
+            print("\nAsked stop (Ctrl+C).")
             break
         except (httpx.HTTPError, ValueError) as e:
             print(f"[ERROR NETWORK] {type(e).__name__}: {e} -> new try in 2 sec")
