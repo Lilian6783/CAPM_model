@@ -17,8 +17,8 @@ POLL_SECONDS = 0.2  # pause entre deux cycles
 
 #Printing news
 def print_new_news(client, seen_ids, tick):
-    all_news = client.get('/news', params={'limit': -1}).json()
-    if not isinstance(all_news, list):      # réponse d'erreur du serveur
+    all_news = client.get('/news', params={'limit': 20}).json()
+    if not isinstance(all_news, list):  
         print(f"[tick {tick}] Réponse inattendue de /news : {all_news}")
         return 0
     shown = 0
@@ -31,7 +31,7 @@ def print_new_news(client, seen_ids, tick):
         seen_ids.add(key)
         shown += 1
         print("\n" + "=" * 70)
-        print(f"[tick {tick}] NOUVELLE #{key} (émise au tick {n.get('tick')})")
+        print(f"[tick {tick}] NOUVELLE #{key-1} (émise au tick {n.get('tick')})")
         print(f"  headline : {n.get('headline')}")
         print(f"  body     : {n.get('body')}")
         print("=" * 70)
