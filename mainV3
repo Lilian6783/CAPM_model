@@ -4,22 +4,22 @@ import time
 import traceback
 import httpx
 
-# Lets Python import news.py and pricing.py even if the script is launched from another folder
+# Import news.py and pricing.py even if the script is launched from another folder
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import news
 import pricing
 
-FIRST_TICK = 1      # on lit les nouvelles seulement si tick > FIRST_TICK
-LAST_TICK = 599     # ... et tick < LAST_TICK (à ajuster selon la durée du cas)
-POLL_SECONDS = 0.2  # pause entre deux cycles
+FIRST_TICK = 1      # Reading news only if tick > FIRST_TICK
+LAST_TICK = 599     
+POLL_SECONDS = 0.2  
 
 
 #Printing news
 def print_new_news(client, seen_ids, tick):
     all_news = client.get('/news', params={'limit': 20}).json()
-    if not isinstance(all_news, list):  
-        print(f"[tick {tick}] Réponse inattendue de /news : {all_news}")
+    if not isinstance(all_news, list):
+        print(f"[tick {tick}] Unexpected response from /news : {all_news}")
         return 0
     shown = 0
 
@@ -31,7 +31,7 @@ def print_new_news(client, seen_ids, tick):
         seen_ids.add(key)
         shown += 1
         print("\n" + "=" * 70)
-        print(f"[tick {tick}] NOUVELLE #{key-1} (émise au tick {n.get('tick')})")
+        print(f"[tick {tick}] News #{key-1} (released at tick {n.get('tick')})")
         print(f"  headline : {n.get('headline')}")
         print(f"  body     : {n.get('body')}")
         print("=" * 70)
@@ -47,7 +47,7 @@ def main(client, max_loops=None):
     was_in_window = False
     loops = 0
 
-    print(f"Algorithme lancé...")
+    print(f"Algo working...")
 
     while max_loops is None or loops < max_loops:
         loops += 1
@@ -61,11 +61,11 @@ def main(client, max_loops=None):
             """Server connexion confirmation"""
             if not connected and tick is not None:
                 connected = True
-                print(f"[OK] Connecté au serveur : status={status}, tick={tick}")
+                print(f"[OK] Connected to server : status={status}, tick={tick}")
 
-            # tick peut être None (case pas démarré / réponse d'erreur du serveur)
+            # tick can be None (case pas démarré / réponse d'erreur du serveur)
             if tick is None:
-                msg = f"Réponse /case sans tick (status={status}), en attente..."
+                msg = f"Response /case without tick (status={status}), waiting..."
                 if msg != last_msg:
                     print(msg)
                     last_msg = msg
@@ -121,11 +121,11 @@ def main(client, max_loops=None):
             print("\nArrêt demandé (Ctrl+C).")
             break
         except (httpx.HTTPError, ValueError) as e:
-            print(f"[ERREUR RÉSEAU] {type(e).__name__}: {e} -> nouvel essai dans 2 s")
+            print(f"[ERROR NETWORK] {type(e).__name__}: {e} -> new try in 2 sec")
             time.sleep(2)
             continue
         except Exception:
-            print("[ERREUR] Exception inattendue (la boucle continue) :")
+            print("[ERROR] Unexpected exception (loop continues) :")
             traceback.print_exc()
             time.sleep(1)
             continue
@@ -143,4 +143,4 @@ if __name__ == "__main__":
         with httpx.Client(base_url=url, params=params, timeout=5.0) as client:
             main(client)
     except KeyboardInterrupt:
-        print("\nArrêt.")
+        print("\nStop.")
