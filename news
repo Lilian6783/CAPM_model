@@ -25,25 +25,41 @@ def get_all_news(client):
     return data if isinstance(data, list) else []
 
 
+
 def parse_news(text):
     """Extracts what a news item contains. Returns a dictionary (empty if nothing)"""
     out = {}
 
+    # Normalize spaces and line breaks
+    text = re.sub(r"\s+", " ", text).strip()
+
     # First news item: betas + risk-free rate
     if "historical beta" in text.lower():
         out["beta"] = {
-            t.upper(): float(v)
+            t.upper(): float(v.replace(",", "."))
             for t, v in re.findall(
-                r"(Alpha|Gamma|Theta) historical beta is\s*:\s*(\d+(?:\.\d+)?)",
-                text, re.IGNORECASE,
+                r"(Alpha|Gamma|Theta)\s+historical\s+beta\s+is\s*:\s*(\d+(?:[.,]\d+)?)",
+                text,
+                re.IGNORECASE,
             )
         }
-        m = re.search(r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%", text, re.IGNORECASE)
+
+        m = re.search(
+            r"risk free is\s*:\s*(\d+(?:\.\d+)?)\s*%",
+            text,
+            re.IGNORECASE
+        )
+
         if m:
-            out["rf"] = float(m.group(1)) / 100   # 0.0107% -> 0.000107
+            out["rf"] = float(m.group(1)) / 100
 
     # Forecast news items: target tick + forecasted price
-    m = re.search(r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)", text, re.IGNORECASE | re.DOTALL)
+    m = re.search(
+        r"at tick (\d+).*?\$\s*([\d,]+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE | re.DOTALL
+    )
+
     if m:
         out["target_tick"] = int(m.group(1))
         out["target_price"] = float(m.group(2).replace(",", ""))
