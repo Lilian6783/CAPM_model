@@ -1,0 +1,146 @@
+import os
+import sys
+import time
+import traceback
+import httpx
+
+# Import news.py and pricing.py even if the script is launched from another folder
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import news
+import pricing
+
+FIRST_TICK = 1      # Reading news only if tick > FIRST_TICK
+LAST_TICK = 599
+POLL_SECONDS = 0.2
+
+
+#Printing news
+def print_new_news(client, seen_ids, tick):
+    all_news = client.get('/news', params={'limit': 20}).json()
+    if not isinstance(all_news, list):
+        print(f"[tick {tick}] Unexpected response from /news : {all_news}")
+        return 0
+    shown = 0
+
+    """ Printing from oldest to lastest """
+    for n in all_news[::-1]:
+        key = n.get('news_id')
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        shown += 1
+        print("\n" + "=" * 70)
+        print(f"[tick {tick}] News #{key-1} (released at tick {n.get('tick')})")
+        print(f"  headline : {n.get('headline')}")
+        print(f"  body     : {n.get('body')}")
+        print("=" * 70)
+    return shown
+
+
+def main(client, max_loops=None):
+    state = news.new_state()
+    seen_ids = set()
+    last_seen_tick = None
+    last_msg = None
+    connected = False
+    was_in_window = False
+    loops = 0
+
+    print(f"Algo working...")
+
+    while max_loops is None or loops < max_loops:
+        loops += 1
+
+        try:
+            case = client.get('/case').json()
+            tick = case.get('tick')
+            status = case.get('status')
+            active = status in ("ACTIVE", None)
+
+            """Server connexion confirmation"""
+            if not connected and tick is not None:
+                connected = True
+                print(f"[OK] Connected to server : status={status}, tick={tick}")
+
+            # tick can be None (case pas démarré / réponse d'erreur du serveur)
+            if tick is None:
+                msg = f"Response /case without tick (status={status}), waiting..."
+                if msg != last_msg:
+                    print(msg)
+                    last_msg = msg
+                time.sleep(1)
+                continue
+
+            # Simulation restarted (tick went backwards): forget old news and old state,
+            # otherwise the new news (same ids as before) would be skipped as "already read"
+            if last_seen_tick is not None and tick < last_seen_tick:
+                print(f"[tick {tick}] simulation restarted -> resetting news and state")
+                news.reset()
+                state = news.new_state()
+                seen_ids = set()
+                was_in_window = False
+                pricing.reset()
+            last_seen_tick = tick
+
+            in_window = active and FIRST_TICK < tick < LAST_TICK
+
+            # Waiting message
+            if not in_window:
+                was_in_window = False
+                msg = f"Case status={status}, tick={tick}: outside the window, waiting..."
+                if msg != last_msg:
+                    print(msg)
+                    last_msg = msg
+            else:
+                last_msg = None
+
+            if in_window:
+                """Printing news when released """
+                shown = print_new_news(client, seen_ids, tick)
+
+                # Entering in window
+                if not was_in_window:
+                    was_in_window = True
+                    print(f"[tick {tick}] Simulation in progress : reading active news")
+                    if shown == 0:
+                        print(f"[tick {tick}] No news released, waiting...")
+
+                """Updating state"""
+                if news.read_news(client, state):
+                    print(f"[tick {tick}] state updated: {state}")
+
+                # 3) CAPM pricing
+                try:
+                    pricing.update_and_trade(client, tick, state)
+                except Exception:
+                    print(f"[tick {tick}] ERROR while pricing/trading:")
+                    traceback.print_exc()
+
+        except KeyboardInterrupt:
+            print("\nAsked stop (Ctrl+C).")
+            break
+        except (httpx.HTTPError, ValueError) as e:
+            print(f"[ERROR NETWORK] {type(e).__name__}: {e} -> new try in 2 sec")
+            time.sleep(2)
+            continue
+        except Exception:
+            print("[ERROR] Unexpected exception (loop continues) :")
+            traceback.print_exc()
+            time.sleep(1)
+            continue
+
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    API_KEY = "DM0NHTR5"
+    API_PORT = 9999
+    url = f"http://localhost:{API_PORT}/v1"
+    params = {'key': API_KEY}
+
+    try:
+        with httpx.Client(base_url=url, params=params, timeout=5.0) as client:
+            main(client)
+    except KeyboardInterrupt:
+        print("\nStop.")
