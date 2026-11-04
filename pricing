@@ -13,9 +13,9 @@ net_limit = 100_000
 safety = 0.99
 gross_cap = gross_limit * safety
 net_cap = net_limit * safety
-budget = net_cap
 min_edge = 2 * fee
 min_trade = 500
+sizing_by = "percent"   # "percent": ranks tickers by expected return (%) | "dollar": ranks them by expected gain in $ per share
 SEND_ORDERS = True
 VERBOSE = True
 
@@ -129,7 +129,7 @@ def compare(res, log):
         log(f"[COMPARE] {t}: market price = {last} | target - market = {edge_cash:+.4f}$ "
             f"({edge_pct:+.2%}) | {verdict}")
 
-        edges[t] = {"edge_cash": edge_cash, "edge_pct": edge_pct}
+        edges[t] = {"edge_cash": edge_cash, "edge_pct": edge_pct, "last": last}
         """ The new price becomes the old price for the next tick """
         old_targets[t] = new
     return edges
@@ -137,18 +137,50 @@ def compare(res, log):
 
 # Position sizing
 def position_sizing(edges, log):
-    """ Sizing budget between tickers considering expected edge %"""
+    """ Maximizing the number of shares held under the gross and net limits """
     desired = {t: 0 for t in tickers}
-    active = {t: e for t, e in edges.items() if abs(e["edge_cash"]) > min_edge}
-    total = sum(abs(e["edge_pct"]) for e in active.values())
-    if not active or total == 0:
+
+    """ Expected gain per share after fees, if we are long and if we are short """
+    if sizing_by == "dollar":
+        gain_long = {t: edges[t]["edge_cash"] - min_edge for t in tickers}
+        gain_short = {t: -edges[t]["edge_cash"] - min_edge for t in tickers}
+    else:
+        gain_long = {t: edges[t]["edge_pct"] - min_edge / edges[t]["last"] for t in tickers}
+        gain_short = {t: -edges[t]["edge_pct"] - min_edge / edges[t]["last"] for t in tickers}
+    for t in tickers:
+        log(f"[SIZING] {t}: edge {edges[t]['edge_cash']:+.4f}$ ({edges[t]['edge_pct']:+.2%}) per share "
+            f"| score ({sizing_by}) long {gain_long[t]:+.5f} | short {gain_short[t]:+.5f}")
+
+    """ Corners of the allowed area: L long shares + S short shares with L + S <= gross_cap and |L - S| <= net_cap """
+    corners = [
+        (0, 0),
+        (min(gross_cap, net_cap), 0),
+        (0, min(gross_cap, net_cap)),
+        ((gross_cap + net_cap) / 2, (gross_cap - net_cap) / 2),
+        ((gross_cap - net_cap) / 2, (gross_cap + net_cap) / 2),
+    ]
+
+    """ Choosing the best ticker to be long, the best ticker to be short and the best corner """
+    best_value = 0
+    for i in tickers:
+        for j in tickers:
+            if i == j:
+                continue
+            for L, S in corners:
+                value = gain_long[i] * L + gain_short[j] * S
+                if value > best_value:
+                    best_value = value
+                    desired = {t: 0 for t in tickers}
+                    desired[i] = int(L)
+                    desired[j] = -int(S)
+
+    if best_value <= 0:
         log("[SIZING] Edge too small: no trade")
         return desired
-    for t, e in active.items():
-        w = abs(e["edge_pct"]) / total
-        qty = int(budget * w)
-        desired[t] = qty if e["edge_cash"] > 0 else -qty
-        log(f"[SIZING] {t}: weight {w:.1%} x budget {budget:,.0f} -> recommended position {desired[t]:+,}")
+
+    gross = sum(abs(v) for v in desired.values())
+    net = sum(desired.values())
+    log(f"[SIZING] Best portfolio: {desired} | gross = {gross:,} | net = {net:+,}")
     return desired
 
 
@@ -172,6 +204,57 @@ def enforce_limits(desired, log):
 
 
 
+# Ordering trades so that the gross and net limits are never exceeded while trading
+def safe_order(deltas, positions):
+    """ Returns a list of steps (ticker, signed quantity), each step is one order of max_order shares at most """
+    current = dict(positions)
+    remaining = dict(deltas)
+    steps = []
+
+    while any(remaining.values()):
+
+        """ Looking for the best next step among the tickers still to trade """
+        best = None
+        for t in remaining:
+            if remaining[t] == 0:
+                continue
+            sign = 1 if remaining[t] > 0 else -1
+            wanted = min(max_order, abs(remaining[t]))
+
+            """ Reducing the step until the safety caps are respected """
+            qty = wanted
+            while qty > 0:
+                new = dict(current)
+                new[t] += sign * qty
+                gross = sum(abs(v) for v in new.values())
+                net = sum(new.values())
+                if gross <= gross_cap and abs(net) <= net_cap:
+                    break
+                qty //= 2
+            if qty == 0:
+                continue
+
+            """ Preferring full steps, then big steps, then the step leaving the most room """
+            load = max(gross / gross_cap, abs(net) / net_cap)
+            key = (qty == wanted, qty, -load)
+            if best is None or key > best[0]:
+                best = (key, t, sign, qty)
+
+        """ No step respects the caps: sending a normal step anyway, the next tick will plan again """
+        if best is None:
+            t = next(t for t in remaining if remaining[t] != 0)
+            sign = 1 if remaining[t] > 0 else -1
+            best = (None, t, sign, min(max_order, abs(remaining[t])))
+
+        _, t, sign, qty = best
+        current[t] += sign * qty
+        remaining[t] -= sign * qty
+        steps.append((t, sign * qty))
+
+    return steps
+
+
+
 # Trading
 def plan_trades(desired, positions, log):
     """Calcuting trades"""
@@ -184,10 +267,10 @@ def plan_trades(desired, positions, log):
         log(f"[TRADE] {t}: current positions {positions[t]:+,} => desired positions {desired[t]:+,} "
             f"| edge : {d:+,}" + ("" if t in deltas else "  (no trade)"))
     if not deltas:
-        log("[TRADE] No more trade to send.")
+        log("[TRADE] No trade to send.")
 
-    """Sending trades reducing exposure"""
-    ordered = sorted(deltas, key=lambda t: 0 if abs(positions[t] + deltas[t]) < abs(positions[t]) else 1)
+    """Sending trades in a safe order: limits are never exceeded between two trades"""
+    ordered = safe_order(deltas, positions)
     return deltas, ordered
 
 def post_order(client, ticker, action, qty):
@@ -204,22 +287,20 @@ def post_order(client, ticker, action, qty):
     return resp
 
 def execute_trades(client, deltas, ordered):
-    """ Executing market trades sliced in blocks of max_order"""
-    for t in ordered:
-        d = deltas[t]
+    """ Executing market trades in the safe order """
+    for t, d in ordered:
         action = "BUY" if d > 0 else "SELL"
-        remaining = abs(d)
-        while remaining > 0:
-            qty = min(max_order, remaining)
-            if SEND_ORDERS:
-                resp = post_order(client, t, action, qty)
-                if isinstance(resp, dict) and "order_id" in resp:
-                    print(f"[TRADE] SENT {action} {qty:,} {t} (order_id {resp['order_id']})")
-                else:
-                    print(f"[TRADE] FAILED {action} {qty:,} {t} : {resp}")
+        qty = abs(d)
+        if SEND_ORDERS:
+            resp = post_order(client, t, action, qty)
+            if isinstance(resp, dict) and "order_id" in resp:
+                print(f"[TRADE] SENT {action} {qty:,} {t} (order_id {resp['order_id']})")
             else:
-                print(f"[TRADE] (SIMULATION, not sent) {action} {qty:,} {t}")
-            remaining -= qty
+                print(f"[TRADE] FAILED {action} {qty:,} {t} : {resp}")
+                """ Stopping at the first failed order: the next tick plans again from the real positions """
+                break
+        else:
+            print(f"[TRADE] (SIMULATION, not sent) {action} {qty:,} {t}")
 
 
 
