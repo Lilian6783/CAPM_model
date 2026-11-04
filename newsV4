@@ -1,0 +1,243 @@
+import re
+import unicodedata
+
+# IDs of news items already processed
+old_ids = set()
+
+
+# Resetting news inputs
+def reset():
+    old_ids.clear()
+
+
+# Initial state called by main
+def new_state():
+    return {
+        "rf": None,
+        "beta": {},
+        "target_tick": None,
+        "target_price": None,
+    }
+
+
+# Requesting all simulation news
+def get_all_news(client):
+    response = client.get("/news", params={"limit": 50})
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, list) else []
+
+
+# Extracting one beta independently
+def extract_beta(text, ticker):
+    """ Supports line breaks, multiple spaces and decimal commas """
+    pattern = (
+        rf"\b{ticker}\b\s+"
+        rf"(?:historical\s+)?beta\s+is\s*:?\s*"
+        rf"([-+]?\d+(?:[.,]\d+)?)"
+    )
+
+    """ Searching the beta of the ticker in the text """
+    match = re.search(pattern, text, re.IGNORECASE)
+
+    """ Converting the decimal comma into a decimal point """
+    if match:
+        return float(match.group(1).replace(",", "."))
+
+    return None
+
+
+# Extracting the three betas
+def parse_betas(text):
+
+    betas = {}
+
+    """ Looking for each beta independently """
+    for ticker in ["ALPHA", "GAMMA", "THETA"]:
+
+        value = extract_beta(text, ticker)
+
+        if value is not None:
+            betas[ticker] = value
+
+    return betas
+
+
+# Extracting the risk-free rate
+def parse_rf(text):
+
+    pattern = (
+        r"(?:historical\s+)?risk[\s-]*free\s+"
+        r"is\s*:?\s*(\d+(?:[.,]\d+)?)\s*%"
+    )
+
+    match = re.search(pattern, text, re.IGNORECASE)
+
+    """ Converting % into decimal (0.0107% -> 0.000107) """
+    if match:
+        return float(match.group(1).replace(",", ".")) / 100
+
+    return None
+
+
+# Extracting the market forecast: target tick + forecasted price
+def parse_forecast(text):
+
+    pattern = (
+        r"at\s+tick\s+(\d+).*?"
+        r"\$\s*([\d,]+(?:\.\d+)?)"
+    )
+
+    """ Searching 'at tick X ... $ price' in the text """
+    match = re.search(
+        pattern,
+        text,
+        re.IGNORECASE | re.DOTALL
+    )
+
+    if match:
+        return {
+            "target_tick": int(match.group(1)),
+            "target_price": float(match.group(2).replace(",", ""))
+        }
+
+    return {}
+
+
+# Extracting what a news item contains
+def parse_news(text):
+    """ Returns a dictionary (empty if nothing) """
+
+    """ Normalizing text (line breaks, tabs, special spaces) """
+    text = unicodedata.normalize("NFKC", str(text))
+    text = re.sub(r"\s+", " ", text).strip()
+
+    out = {}
+
+    """ First news item: betas """
+    betas = parse_betas(text)
+
+    if betas:
+        out["beta"] = betas
+
+    """ First news item: risk-free rate """
+    rf = parse_rf(text)
+
+    if rf is not None:
+        out["rf"] = rf
+
+    """ Forecast news items: target tick + forecasted price """
+    forecast = parse_forecast(text)
+    out.update(forecast)
+
+    return out
+
+
+# Displaying one news item, followed by what was extracted from it
+def print_news(item, data):
+
+    print("\n" + "=" * 70)
+    print(f"NEWS #{item.get('news_id')} | tick {item.get('tick')}")
+    print(f"Headline: {item.get('headline')}")
+    print(f"Body: {item.get('body')}")
+    print(f"Parsed: {data if data else 'Nothing extracted'}")
+    print("=" * 70)
+
+
+# Reading unread news and updating state
+def read_news(client, state, debug=True):
+    """ Returns True if at least one news item changed the state """
+
+    changed = False
+
+    """ Sorting from oldest to newest """
+    items = sorted(
+        get_all_news(client),
+        key=lambda x: x.get("news_id", 0)
+    )
+
+    for item in items:
+
+        news_id = item.get("news_id")
+
+        """ Skipping news without id or already processed """
+        if news_id is None or news_id in old_ids:
+            continue
+
+        """ Building the text from headline and body """
+        text = (
+            str(item.get("headline") or "")
+            + " "
+            + str(item.get("body") or "")
+        )
+
+        """ Parsing news """
+        data = parse_news(text)
+
+        """ Printing news and debug info """
+        if debug:
+            print_news(item, data)
+
+            print("[DEBUG] Raw text:", repr(text))
+            print("[DEBUG] Extracted betas:", data.get("beta", {}))
+
+        """ Updating betas independently """
+        if "beta" in data:
+            state["beta"].update(data["beta"])
+            changed = True
+
+        """ Updating risk-free rate """
+        if "rf" in data:
+            state["rf"] = data["rf"]
+            changed = True
+
+        """ Updating forecast """
+        if "target_tick" in data:
+            state["target_tick"] = data["target_tick"]
+            state["target_price"] = data["target_price"]
+            changed = True
+
+        """ Marking the news as processed only after parsing """
+        old_ids.add(news_id)
+
+        if debug:
+            print("[DEBUG] Updated state:", state)
+
+    return changed
+
+
+# Printing every news item on the server
+def show_all_news(client):
+    """ Without touching the state """
+
+    items = sorted(
+        get_all_news(client),
+        key=lambda x: x.get("news_id", 0)
+    )
+
+    print(f"{len(items)} news item(s) on server")
+
+    for item in items:
+
+        text = (
+            str(item.get("headline") or "")
+            + " "
+            + str(item.get("body") or "")
+        )
+
+        print_news(item, parse_news(text))
+
+
+# CAPM expected return: E[Ri] = Rf + beta * (Rm - Rf)
+def get_exp_return(state, ticker, rm):
+
+    return (
+        state["rf"]
+        + state["beta"][ticker] * (rm - state["rf"])
+    )
+
+
+# Alpha: gap between the observed return and the expected return
+def get_alpha(state, ticker, rm, y_observed):
+
+    return y_observed - get_exp_return(state, ticker, rm)
