@@ -63,7 +63,7 @@ def main(client, max_loops=None):
                 connected = True
                 print(f"[OK] Connected to server : status={status}, tick={tick}")
 
-            # tick can be None (case pas démarré / réponse d'erreur du serveur)
+            # tick can be None (case not started / error response from the server)
             if tick is None:
                 msg = f"Response /case without tick (status={status}), waiting..."
                 if msg != last_msg:
