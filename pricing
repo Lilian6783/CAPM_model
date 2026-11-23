@@ -16,6 +16,7 @@ net_cap = net_limit * safety
 min_edge = 2 * fee
 min_trade = 500
 sizing_by = "percent"   # "percent": ranks tickers by expected return (%) | "dollar": ranks them by expected gain in $ per share
+max_move_per_tick = None   # Maximum number of shares traded per tick (None = no limit), e.g. 50_000 to enter the positions gradually
 SEND_ORDERS = True
 VERBOSE = True
 
@@ -25,13 +26,15 @@ _last_tick = None
 _last_inputs = None
 _last_missing = None
 _tickers_checked = False
+slippage_total = 0.0
 
 # Resetting pricing memory when a new simulation starts
 def reset():
-    global old_targets, _last_tick, _last_inputs, _last_missing, _tickers_checked
+    global old_targets, _last_tick, _last_inputs, _last_missing, _tickers_checked, slippage_total
     old_targets = {}
     _last_tick = _last_inputs = _last_missing = None
     _tickers_checked = False
+    slippage_total = 0.0
     print("[PRICING] Pricing memory is reset")
 
 ###################################################################################
@@ -204,6 +207,23 @@ def enforce_limits(desired, log):
 
 
 
+# Limiting the number of shares traded in one tick (gradual entry)
+def limit_move(desired, positions, log):
+    if max_move_per_tick is None:
+        return desired
+
+    moves = {t: desired[t] - positions[t] for t in tickers}
+    total = sum(abs(m) for m in moves.values())
+
+    """ Same direction, only a part of the move: the result stays between two allowed portfolios, so it is allowed too """
+    if total > max_move_per_tick:
+        factor = max_move_per_tick / total
+        desired = {t: positions[t] + int(moves[t] * factor) for t in tickers}
+        log(f"[LIMITS] Gradual entry: {total:,} shares to trade, {factor:.0%} of the move this tick -> {desired}")
+    return desired
+
+
+
 # Ordering trades so that the gross and net limits are never exceeded while trading
 def safe_order(deltas, positions):
     """ Returns a list of steps (ticker, signed quantity), each step is one order of max_order shares at most """
@@ -280,21 +300,30 @@ def post_order(client, ticker, action, qty):
     for _ in range(3):
         resp = client.post("/orders", params=params).json()
         if isinstance(resp, dict) and "order_id" not in resp and resp.get("wait", 0) > 0:
-            print(f"[TRADE]   debit limit, waiting for {resp['wait']} s puis nouvel essai")
+            print(f"[TRADE]   debit limit, waiting for {resp['wait']} s before retrying")
             time.sleep(resp["wait"] + 0.01)
             continue
         break
     return resp
 
-def execute_trades(client, deltas, ordered):
+def execute_trades(client, deltas, ordered, market):
     """ Executing market trades in the safe order """
+    global slippage_total
     for t, d in ordered:
         action = "BUY" if d > 0 else "SELL"
         qty = abs(d)
         if SEND_ORDERS:
             resp = post_order(client, t, action, qty)
             if isinstance(resp, dict) and "order_id" in resp:
-                print(f"[TRADE] SENT {action} {qty:,} {t} (order_id {resp['order_id']})")
+
+                """ Slippage: gap in $ between the fill price (vwap) and the last price seen when deciding """
+                note = ""
+                fill = resp.get("vwap")
+                if fill:
+                    slip = (fill - market[t]["last"]) * (1 if d > 0 else -1) * qty
+                    slippage_total += slip
+                    note = f" | fill {fill:.4f} vs last {market[t]['last']} | slippage {slip:+,.0f}$"
+                print(f"[TRADE] SENT {action} {qty:,} {t} (order_id {resp['order_id']}){note}")
             else:
                 print(f"[TRADE] FAILED {action} {qty:,} {t} : {resp}")
                 """ Stopping at the first failed order: the next tick plans again from the real positions """
@@ -343,6 +372,7 @@ def update_and_trade(client, tick, state):
         desired = position_sizing(edges, log)
         desired = enforce_limits(desired, log)
         positions = {t: market[t]["position"] for t in tickers}
+        desired = limit_move(desired, positions, log)
         deltas, ordered = plan_trades(desired, positions, log)
 
         if VERBOSE or changed or deltas:
@@ -351,11 +381,11 @@ def update_and_trade(client, tick, state):
             buf.clear()
 
         if deltas:
-            execute_trades(client, deltas, ordered)          # ÉTAPE 7 (envoi)
-            after = get_market(client)                       # ÉTAPE 8
+            execute_trades(client, deltas, ordered, market)  # STEP 7 (sending)
+            after = get_market(client)                       # STEP 8 (positions after trades)
             pos = {t: after[t]["position"] for t in tickers}
             print(f"[POSITIONS] after trades : {pos} | gross={sum(abs(v) for v in pos.values()):,} "
-                  f"| net={sum(pos.values()):+,}")
+                  f"| net={sum(pos.values()):+,} | cumulative slippage = {slippage_total:+,.0f}$")
     except Exception:
         flush()
         raise
