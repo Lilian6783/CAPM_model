@@ -351,8 +351,8 @@ def update_and_trade(client, tick, state):
             buf.clear()
 
         if deltas:
-            execute_trades(client, deltas, ordered)          # ÉTAPE 7 (envoi)
-            after = get_market(client)                       # ÉTAPE 8
+            execute_trades(client, deltas, ordered)         
+            after = get_market(client)                      
             pos = {t: after[t]["position"] for t in tickers}
             print(f"[POSITIONS] after trades : {pos} | gross={sum(abs(v) for v in pos.values()):,} "
                   f"| net={sum(pos.values()):+,}")
